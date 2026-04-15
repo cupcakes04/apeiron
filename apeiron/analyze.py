@@ -218,7 +218,7 @@ class Analyzer(Extractor, Processor, Inferencer):
 
         mdatas, datas = [], []
         for data in predata.generator(batch_size=batch_size, shuffle=False):
-            pred = self.predict_data(data)
+            pred = self.predict_data(data, run_metric=bool(ground_truth))
             mdatas.append(pred['mdata'])
             datas.append(pred['data'])
         

@@ -15,7 +15,7 @@ class GatedAttention(nn.Module):
         Args:
             h (torch.Tensor): (B, N, D) pooled features.
         Returns:
-            torch.Tensor: (B, 1, N) normalized attention weights.
+            torch.Tensor: (B, N, 1) normalized attention weights.
         """
         a_v = torch.tanh(self.attention_V(h))     # (B, N, attn_dim)
         a_u = torch.sigmoid(self.attention_U(h))  # (B, N, attn_dim)

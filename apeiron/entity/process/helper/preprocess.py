@@ -46,10 +46,11 @@ class PreData:
         if shuffle is not None: self.gen_defaults['shuffle'] = shuffle
         if iterate is not None: self.gen_defaults['iterate'] = iterate
     
-    def generator(self, batch_size=32, shuffle=True, iterate=True):
+    def generator(self, batch_size=32, shuffle=True, iterate=True, propagate_loss=True):
         """
         Yields batches of data. If iterate=False, returns the entire 
         dataset with an added batch dimension.
+        - propagate_loss is only when iterate=False
         """
         batch_size = self.gen_defaults.get('batch_size', batch_size)
         shuffle = self.gen_defaults.get('shuffle', shuffle)
@@ -59,6 +60,7 @@ class PreData:
         if not iterate:
             out = self.get_dict()
             out.update(self.metadata)
+            out.update(propagate_loss=propagate_loss)
             yield out
             return
 
@@ -81,6 +83,7 @@ class PreData:
                 batch_dict[key] = np.array([data_array[idx] for idx in batch_indices])
 
             batch_dict.update(self.metadata)
+            batch_dict.update(propagate_loss=True)
             yield batch_dict
 
 

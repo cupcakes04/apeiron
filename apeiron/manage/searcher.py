@@ -55,7 +55,7 @@ class Searcher:
         self.global_index = faiss.IndexFlatL2(d)
         self.global_index.add(np.ascontiguousarray(self.centers, dtype=np.float32))
 
-    def fit_from_generator(self, descriptor_generator, max_samples=500000):
+    def fit_from_generator(self, descriptor_generator, max_samples=250000):
         """
         Fits the codebook by dynamically sampling tiles from a generator.
         This prevents out-of-memory errors when processing 1000s of slides.
@@ -65,6 +65,9 @@ class Searcher:
         buffer = []
         current_size = 0
         
+        is_stopping = False
+        stop_counter = 0
+
         for desc in descriptor_generator:
             buffer.append(desc['features'])
             current_size += desc['features'].shape[0]
@@ -75,10 +78,17 @@ class Searcher:
                 indices = np.random.choice(merged.shape[0], max_samples, replace=False)
                 buffer = [merged[indices]]
                 current_size = max_samples
+                is_stopping = True
+                
+            if is_stopping:
+                stop_counter += 1
+                if stop_counter > 5:
+                    break
                 
         # Final merge and truncate before fitting
         if buffer:
             merged = np.vstack(buffer)
+            print(f"Total samples: {merged.shape[0]}")
             if merged.shape[0] > max_samples:
                 indices = np.random.choice(merged.shape[0], max_samples, replace=False)
                 merged = merged[indices]

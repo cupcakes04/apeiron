@@ -218,7 +218,6 @@ class Processor(Reader, Annotator, Visualiser):
         all_crd, all_ann, all_atn, all_lbl, all_obj = [], [], [], [], []
         global_offset_lbl = 0
         global_offset_obj = 0
-        data_type = 'single'
 
         for mdata, data_dict in zip(mdatas, datas):
 

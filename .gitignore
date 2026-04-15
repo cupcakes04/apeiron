@@ -1,0 +1,11 @@
+# Ignore all model weights
+*.pt
+*.pth
+*.pt
+*.pkl
+*.svs
+*.npy
+*.dat
+
+# Dependencies
+/.windsurf

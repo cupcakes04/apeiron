@@ -89,12 +89,17 @@ class Collector(Manager, Searcher):
         if not self.available_modes['slide']: return
         collect_ids = convert_to_list(collect_ids)
         label_cols = [f"class{lbl}" for lbl in list(self.slide_gt_configs['label_configs']['class_id_map'].keys())]
+        
+        # Filter dataset to get total count
+        df_filtered = self.selected_slide_dataset
+        if collect_ids:
+            df_filtered = df_filtered[df_filtered['slide_id'].astype(str).isin(collect_ids)]
+        total_slides = len(df_filtered)
 
         # Iterate through unique slides in your dataframe
-        for _, row in self.shuffle_df(self.selected_slide_dataset, shuffle).iterrows():
+        slide_count = 0
+        for _, row in self.shuffle_df(df_filtered, shuffle).iterrows():
             slide_id = str(row['slide_id'])
-            if collect_ids and not slide_id in collect_ids:
-                continue
             slide_label = row[label_cols].values.astype(np.float16)
             slide_label = np_unsqueeze(slide_label)   # (C,) -> (1,C)
             text = row['text'] if 'text' in row else None
@@ -116,8 +121,10 @@ class Collector(Manager, Searcher):
                     }
 
             # 3. Generators
+            slide_count += 1
+            propagate_loss = (slide_count % batch_size == 0) or (slide_count == total_slides)
             predata = self.analyzer.slide_preprocessor()
-            for data in predata.generator(batch_size=batch_size, shuffle=shuffle):
+            for data in predata.generator(batch_size=batch_size, shuffle=shuffle, propagate_loss=propagate_loss):
                 yield extend_dict(data, id=slide_id, label=slide_label, text=text)
 
 
@@ -212,104 +219,6 @@ class Collector(Manager, Searcher):
         # 3. Yield them
         for batch in all_batches:
             yield batch
-        
-
-    # |-----------------------------------------------|
-    # |-------------- Similarity Search --------------|
-    # |-----------------------------------------------|
-    
-    def get_descriptor_generator(self, mode: Literal['slide', 'tile']):
-        if mode != self.inf_mode:
-            self.intitalise_inferencer(mode=mode)
-            self.index_built = False
-
-        self.inf_mode = mode
-        
-        if mode == 'slide':
-            def descriptor_generator():
-                for _, row in self.selected_slide_dataset.iterrows():
-                    slide_id = str(row['slide_id'])
-                    self.serve_slide_analyzer(slide_id, data_modes='embeddings')
-                    self.analyzer.prepare_features(**self.slide_feats_configs)
-                    img_emb = self.analyzer.run_emb_fns(features=self.analyzer.proc_ext.features).get('img_emb')
-                    yield {
-                        'id': slide_id, 'features': self.analyzer.proc_ext.features, 
-                        'coords': self.analyzer.proc_ext.coords, "img_emb": to_cpu(img_emb).numpy()
-                    }
-
-        elif mode == 'tile':
-            def descriptor_generator():
-                for tile_class, tile_data in self.tile_data_paths.items():
-                    new_tile_ids = np.array(tile_data['tile_ids'])
-                    self.serve_tile_analyzer(tile_class)
-                    self.analyzer.prepare_features(**self.tile_feats_configs)
-                    img_emb = self.analyzer.run_emb_fns(features=self.analyzer.proc_ext.features).get('img_emb')
-                    yield {
-                        'id': new_tile_ids, 'features': self.analyzer.proc_ext.features, 
-                        'coords': self.analyzer.proc_ext.coords, "img_emb": to_cpu(img_emb).numpy()
-                    }
-
-        return descriptor_generator
-
-
-    def similarity_search(self,
-        mode: Literal['slide', 'tile'],
-        query_mode: List[Literal['feat', 'roi', 'wrd', 'img']],
-        query_feat_id: List[int] = None,
-        query_roi_id: List[int] = None, 
-        query_text: List[str] = None,
-        rebuild_index=False,
-        # Additional
-        top_k: int = 5,
-        similarity_threshold: float = 0.8,
-        ):
-        if not self.available_modes[mode]: return
-        query_mode = convert_to_list(query_mode)
-
-        # Defaults to build index if no query passed
-        descriptor_generator = self.get_descriptor_generator(mode)
-
-        if not self.index_built or rebuild_index:
-            self.fit_from_generator(descriptor_generator())
-            self.build_index(descriptor_generator(), compute=bool(mode=='slide'))
-            self.index_built = True
-
-        feat_res = None
-        roi_res = None
-        wrd_res = None
-
-        # 1. Search for similar features
-        if 'feat' in query_mode:
-            feat_res = self.find_similar_feat(query_feat_id, top_k=top_k)
-
-        # 2. Search for similar ROI in features
-        if 'roi' in query_mode and feat_res is not None:
-            self.serve_slide_analyzer(query_feat_id, data_modes='embeddings')
-            self.analyzer.prepare_features(**self.slide_feats_configs)
-            query_features = self.analyzer.proc_ext.features[query_roi_id]
-
-            # Loop starting from the second row (index 1 onwards)
-            dfs_dict = {}
-            for _, row in feat_res.iloc[1:].iterrows():
-                tgt_emb_id = row['id']
-                self.serve_slide_analyzer(tgt_emb_id, data_modes='embeddings')
-                self.analyzer.prepare_features(**self.slide_feats_configs)
-                dfs_dict[tgt_emb_id] = self.find_similar_regions(
-                    target_features=self.analyzer.proc_ext.features,
-                    target_coords=self.analyzer.proc_ext.coords,
-                    query_features=query_features,
-                    similarity_threshold=similarity_threshold
-                )
-            roi_res = pd.concat(dfs_dict)
-
-        # 3. Search for similar text among VLM embeddings
-        if 'wrd' in query_mode or 'img' in query_mode:
-            txt_mode = 'img' if 'img' in query_mode else 'wrd'
-            img_emb = convert_to_list(query_feat_id)
-            wrd_emb = self.analyzer.run_emb_fns(text=query_text).get('wrd_emb')
-            wrd_res = self.find_similar_text(mode=txt_mode, img_emb=img_emb, wrd_emb=to_cpu(wrd_emb).numpy())
-            
-        return SimDF(feat_res=feat_res, roi_res=roi_res, wrd_res=wrd_res)
 
 
     # |-----------------------------------------------|
@@ -491,3 +400,101 @@ class Collector(Manager, Searcher):
         # Collect data and evaluate
         eval_collector = self.data_collector(collect_ids=eval_ids, shuffle=False, batch_size=batch_size, cache=True)
         return self.analyzer.eval_epoch(eval_collector)
+
+
+    # |-----------------------------------------------|
+    # |-------------- Similarity Search --------------|
+    # |-----------------------------------------------|
+    
+    def get_descriptor_generator(self, mode: Literal['slide', 'tile']):
+        if mode != self.inf_mode:
+            self.intitalise_inferencer(mode=mode)
+            self.index_built = False
+
+        self.inf_mode = mode
+        
+        if mode == 'slide':
+            def descriptor_generator():
+                for _, row in self.shuffle_df(self.selected_slide_dataset, shuffle=True).iterrows():
+                    slide_id = str(row['slide_id'])
+                    self.serve_slide_analyzer(slide_id, data_modes='embeddings')
+                    self.analyzer.prepare_features(**self.slide_feats_configs)
+                    img_emb = self.analyzer.get_contrastive_embeddings(features=self.analyzer.proc_ext.features).get('img_emb')
+                    yield {
+                        'id': slide_id, 'features': self.analyzer.proc_ext.features, 
+                        'coords': self.analyzer.proc_ext.coords, "img_emb": to_cpu(img_emb).numpy()
+                    }
+
+        elif mode == 'tile':
+            def descriptor_generator():
+                for tile_class, tile_data in self.tile_data_paths.items():
+                    new_tile_ids = np.array(tile_data['tile_ids'])
+                    self.serve_tile_analyzer(tile_class)
+                    self.analyzer.prepare_features(**self.tile_feats_configs)
+                    img_emb = self.analyzer.get_contrastive_embeddings(features=self.analyzer.proc_ext.features).get('img_emb')
+                    yield {
+                        'id': new_tile_ids, 'features': self.analyzer.proc_ext.features, 
+                        'coords': self.analyzer.proc_ext.coords, "img_emb": to_cpu(img_emb).numpy()
+                    }
+
+        return descriptor_generator
+
+
+    def similarity_search(self,
+        mode: Literal['slide', 'tile'],
+        query_mode: List[Literal['feat', 'roi', 'wrd', 'img']],
+        query_feat_id: List[int] = None,
+        query_roi_id: List[int] = None, 
+        query_text: List[str] = None,
+        rebuild_index=False,
+        # Additional
+        top_k: int = 5,
+        similarity_threshold: float = 0.8,
+        ):
+        if not self.available_modes[mode]: return
+        query_mode = convert_to_list(query_mode)
+
+        # Defaults to build index if no query passed
+        descriptor_generator = self.get_descriptor_generator(mode)
+
+        if not self.index_built or rebuild_index:
+            self.fit_from_generator(descriptor_generator())
+            self.build_index(descriptor_generator(), compute=bool(mode=='slide'))
+            self.index_built = True
+
+        feat_res = None
+        roi_res = None
+        wrd_res = None
+
+        # 1. Search for similar features
+        if 'feat' in query_mode:
+            feat_res = self.find_similar_feat(query_feat_id, top_k=top_k)
+
+        # 2. Search for similar ROI in features
+        if 'roi' in query_mode and feat_res is not None:
+            self.serve_slide_analyzer(query_feat_id, data_modes='embeddings')
+            self.analyzer.prepare_features(**self.slide_feats_configs)
+            query_features = self.analyzer.proc_ext.features[query_roi_id]
+
+            # Loop starting from the second row (index 1 onwards)
+            dfs_dict = {}
+            for _, row in feat_res.iloc[1:].iterrows():
+                tgt_emb_id = row['id']
+                self.serve_slide_analyzer(tgt_emb_id, data_modes='embeddings')
+                self.analyzer.prepare_features(**self.slide_feats_configs)
+                dfs_dict[tgt_emb_id] = self.find_similar_regions(
+                    target_features=self.analyzer.proc_ext.features,
+                    target_coords=self.analyzer.proc_ext.coords,
+                    query_features=query_features,
+                    similarity_threshold=similarity_threshold
+                )
+            roi_res = pd.concat(dfs_dict)
+
+        # 3. Search for similar text among VLM embeddings
+        if 'wrd' in query_mode or 'img' in query_mode:
+            txt_mode = 'img' if 'img' in query_mode else 'wrd'
+            img_emb = convert_to_list(query_feat_id)
+            wrd_emb = self.analyzer.get_contrastive_embeddings(text=query_text).get('wrd_emb')
+            wrd_res = self.find_similar_text(mode=txt_mode, img_emb=img_emb, wrd_emb=to_cpu(wrd_emb).numpy())
+            
+        return SimDF(feat_res=feat_res, roi_res=roi_res, wrd_res=wrd_res)

@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .awl import AutomaticWeightedLoss
 
 # ============================================================================
 # (1) Primitive losses — slide labels: logits (B, C), labels (B, C)
@@ -265,6 +264,7 @@ _LABEL_LOSS_REGISTRY = {
     'mae':         MAELoss,
     'bce':         BCEWithLogitsLoss,
     'multi_fc':    MultiLabelFocalLoss,
+    'dice':        DiceLoss,
 }
 
 def build_loss(loss_type: str, cls_weights: dict = None, **kwargs) -> nn.Module:
@@ -289,4 +289,3 @@ def build_loss(loss_type: str, cls_weights: dict = None, **kwargs) -> nn.Module:
         return cls(cls_weights=cls_weights, **kwargs)
     except TypeError:
         return cls(**kwargs)
-        

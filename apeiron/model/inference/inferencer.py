@@ -1,5 +1,6 @@
 from ..downstream import *
 from .composite import *
+from .utility import ModelData
 from .optimizer import Optimizer
 import torch
 from typing import Literal, List
@@ -19,12 +20,10 @@ class Inferencer:
         else:
             self.device = get_device()
             
-        self.inferencer: MultiHeadModel
-        self.losser: MultiModalLoss
-        self.predictor: MultiModalPredict
+        self.inferencer: MultiHeadModel = None
 
-        self.optim_cfgs: dict
-        self.optimizer: Optimizer
+        self.optim_cfgs: dict = {}
+        self.optimizer: Optimizer = None
         self.optimizer_state_dict: dict = None
         
         self.epoch_losses: dict = {}
@@ -37,9 +36,9 @@ class Inferencer:
 
 
     def setup_inferencer(self, 
-        in_features, mode=None, lbl_n_classes=None, ann_n_classes=None,
-        inf_models = 'abmil', lbl_loss_type='bce', ann_loss_type='bce',
-        lbl_cls_weights: dict = None, ann_cls_weights: dict = None,
+        in_features, mode=None, inf_models = 'abmil', 
+        lbl_n_classes=None, lbl_loss_type='bce', lbl_cls_weights: dict = None,
+        ann_n_classes=None, ann_loss_type='bce', ann_cls_weights: dict = None,
         lr=1e-4, optimizer='adam', weight_decay: float = 0.0, scheduler: str = None,
         chkp_path=None, **kwargs
     ):
@@ -63,20 +62,12 @@ class Inferencer:
             chkp_path (str): Path to a checkpoint to load model weights from.
         """
 
-        # 1. Prepare multimodal heads and lossers
+        # 1. Prepare multimodal heads
         self.inferencer = MultiHeadModel(
             in_features, mode=mode, inf_models=inf_models,
-            lbl_n_classes=lbl_n_classes, ann_n_classes=ann_n_classes, 
-        )
-        self.losser = MultiModalLoss(
-            lbl_loss_type=lbl_loss_type, ann_loss_type=ann_loss_type, 
-            lbl_cls_weights=lbl_cls_weights, ann_cls_weights=ann_cls_weights,
-        )
-        self.inferencer.to(self.device)
-        self.losser.to(self.device)
-
-        # 2. Prepare predictor with metricator
-        self.predictor = MultiModalPredict(lbl_loss_type=lbl_loss_type, ann_loss_type=ann_loss_type)
+            lbl_n_classes=lbl_n_classes, lbl_loss_type=lbl_loss_type, lbl_cls_weights=lbl_cls_weights,
+            ann_n_classes=ann_n_classes, ann_loss_type=ann_loss_type, ann_cls_weights=ann_cls_weights,
+        ).to(self.device)
 
         # 3. Prepare Optimizers
         self.optim_cfgs = {'lr': lr, 'optimizer': optimizer, 'weight_decay': weight_decay, 'scheduler': scheduler}
@@ -90,13 +81,24 @@ class Inferencer:
     def setup_optimizer(self, **kwargs):
         if len(self.optim_cfgs) > 0:
             kwargs = extend_dict(kwargs, **self.optim_cfgs)
+
+        # Get IDs of parameters in the losser
+        losser_params = set(self.inferencer.losser.parameters())
+
+        # Filter the main parameters to exclude those in losser
+        main_params = [p for p in self.inferencer.parameters() if p not in losser_params]
+
         param_groups = [
-            {'params': self.inferencer.parameters()},
-            {'params': self.losser.parameters(), 'lr': 1e-3}
+            {'params': main_params}, # Main model minus losser
+            {'params': list(losser_params), 'lr': 1e-3} # Just losser
         ]
+
         self.optimizer = Optimizer(params=param_groups, **kwargs)
         if self.optimizer_state_dict is not None:
             self.optimizer.load_state_dict(self.optimizer_state_dict)
+
+    def get_contrastive_embeddings(self, *args, **kwargs):
+        return self.inferencer.get_contrastive_embeddings(*args, **kwargs)
 
 
     # |-----------------------------------------------|
@@ -109,18 +111,19 @@ class Inferencer:
             if v is None: 
                 continue
             elif k in ['coords', 'features', 'annotation', 'label'] and len(v) > 0:
-                if mode == 'cuda': 
+                if mode == 'cuda':
                     data[k] = torch.as_tensor(v).to(self.device)
                 elif mode == 'cpu':
                     data[k] = to_cpu(v)
 
     @torch.no_grad()
-    def predict_data(self, data: dict, threshold=0.5):
+    def predict_data(self, data: dict, threshold=0.5, run_metric=True):
         """Forward pass + prediction (single sample, no grad)."""
 
         self.prep_data(data, mode='cuda')
         mdata = self.inferencer(**data)
-        self.predictor(mdata, target=data, threshold=threshold)
+        self.inferencer.predict(mdata)
+        if run_metric: self.inferencer.metric(mdata, threshold=threshold, **data)
 
         data.pop('features', None)
         self.prep_data(data, mode='cpu')
@@ -148,26 +151,33 @@ class Inferencer:
         self.epoch_metrics = {}
 
         n_samples = 0
+        self.optimizer.zero_grad()
+        accumulated_loss = 0.0
 
         for data in tqdm(data_collector):
-            self.optimizer.zero_grad()
-
             # 1. Compute loss (this now processes a whole batch)
             self.prep_data(data, mode='cuda')
-            mdata: Modeldata = self.inferencer(**data)
-            self.losser(mdata, **data)
+            mdata: ModelData = self.inferencer(**data)
+            self.inferencer.loss(mdata, **data)
             final_loss = mdata.composite['final_loss']
 
+            accumulated_loss = accumulated_loss + final_loss
+
             # 2. Backprop and Step immediately
-            final_loss.backward()
-            self.optimizer.step()
+            if data.get('propagate_loss', True):
+                accumulated_loss.backward()
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                self.inferencer.clear_cache()
+                accumulated_loss = 0.0
 
             # 3. Accumulate loss tracking (using batch averages)
             self.cum_epoch(mdata.loss.get_dict(composite=mdata.composite), self.epoch_losses)
 
             # 4. Compute metrics (no grad — detached from the graph)
             with torch.no_grad():
-                self.predictor(mdata, target=data)
+                self.inferencer.predict(mdata)
+                self.inferencer.metric(mdata, threshold=0.5, **data)
                 self.cum_epoch(mdata.metric.get_dict(), self.epoch_metrics)
             n_samples += 1
 
@@ -197,9 +207,10 @@ class Inferencer:
         n_samples = 0
         for data in tqdm(data_collector):
             self.prep_data(data, mode='cuda')
-            mdata: Modeldata = self.inferencer(**data)
-            self.losser(mdata, **data)
-            self.predictor(mdata, target=data, threshold=threshold)
+            mdata: ModelData = self.inferencer(**data)
+            self.inferencer.loss(mdata, **data)
+            self.inferencer.predict(mdata)
+            self.inferencer.metric(mdata, threshold=threshold, **data)
             
             self.cum_epoch(mdata.loss.get_dict(composite=mdata.composite), self.epoch_losses)
             self.cum_epoch(mdata.metric.get_dict(), self.epoch_metrics)
@@ -234,7 +245,6 @@ class Inferencer:
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self.inferencer.state_dict(),
-            'losser_state_dict': self.losser.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
         }
         torch.save(checkpoint, chkp_path)
@@ -246,50 +256,8 @@ class Inferencer:
 
         # 2. Load the weights into the objects
         self.inferencer.load_state_dict(checkpoint['model_state_dict'], strict=False)
-        self.losser.load_state_dict(checkpoint['losser_state_dict'], strict=False)
         self.optimizer_state_dict = checkpoint['optimizer_state_dict']
         print('Loaded epoch:', checkpoint['epoch'])
 
         # 3. Move to device
         self.inferencer.to(self.device)
-        self.losser.to(self.device)
-
-
-    # |-----------------------------------------------|
-    # |-------------------- Extra --------------------|
-    # |-----------------------------------------------|
-
-    def run_emb_fns(self, features=None, text=None):
-        """
-        Args:
-        - features -> (B, N, F)
-        - text -> list[str]
-        
-        output: (dict)
-        - img_emb -> (B,H)
-        - wrd_emb -> (B,H)
-        
-        usage:
-        ```python
-        # Calculate scores (matching score for each text)
-        # (4, H) @ (H, 1) -> (4, 1)
-        scores = wrd_emb @ img_emb.t()
-
-        # Calculate scores (matching score for each emb)
-        # (10, H) @ (H, 1) -> (10, 1)
-        scores = img_emb @ wrd_emb.t()
-        ```
-
-        """
-        vectors = {}
-
-        img_emb_fn = self.inferencer.embedding_fns.get('img_emb_fn')
-        if all([x is not None for x in [features, img_emb_fn]]):
-            vectors.update(img_emb_fn(features=torch.as_tensor(features)))
-
-        wrd_emb_fn = self.inferencer.embedding_fns.get('wrd_emb_fn')
-        if all([x is not None for x in [text, wrd_emb_fn]]):
-            vectors.update(wrd_emb_fn(text=text))
-
-        return vectors
-        

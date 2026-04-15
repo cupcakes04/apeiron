@@ -1,4 +1,3 @@
 from .inferencer import *
-from .predictor import *
+from .utility import *
 from .optimizer import *
-from .composite import *
