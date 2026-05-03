@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 MODALITIES = ['label', 'annotation' , 'objects', 'text']
 LOSS_MODALITIES = ['lbl_loss', 'ann_loss', 'obj_loss', 'gen_loss', 'con_loss']
-INF_MODELS = ['abmil', 'gatmil', 'classifier', 'unet', 'spconv', 'detr', 'generative', 'contrastive']
+INF_MODELS = ['abmil', 'gatmil', 'roimil', 'classifier', 'unet', 'spconv', 'detr', 'generative', 'contrastive']
             
 @dataclass
 class HeadData:
@@ -122,6 +122,22 @@ def choose_inferencer(
             num_heads = 4,
             lbl_loss_type = lbl_loss_type, 
             lbl_cls_weights = lbl_cls_weights, 
+        )
+
+    if inf_model == 'roimil':
+        inferencer = ROIMIL(
+            in_features = in_features,
+            lbl_n_classes = lbl_n_classes,
+            ann_n_classes = ann_n_classes,
+            embed_dim = 256,
+            dropout = 0.25,
+            attn_dim = 128,
+            k_neighbors = 32,
+            num_heads = 4,
+            lbl_loss_type = lbl_loss_type, 
+            lbl_cls_weights = lbl_cls_weights, 
+            ann_loss_type = ann_loss_type, 
+            ann_cls_weights = ann_cls_weights, 
         )
 
     elif inf_model == 'classifier':

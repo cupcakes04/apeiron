@@ -1,82 +1,136 @@
-# APEIRON Modeling Pipeline
+# Apeiron Model API Reference (`apeiron/model`)
 
-The `apeiron/model` directory contains the core neural network architectures for APEIRON. The framework is designed around a **multi-modal, multi-head** paradigm where a shared foundational **Backbone** extracts representations that are then processed by a composite set of task-specific **Downstream** models.
+## Overview
+The `apeiron/model` directory houses the deep learning architectures. It is distinctly split into three functional layers:
 
-## Architecture Pipeline
+1. **`backbone`**: Heavy, pre-trained Vision Transformers (ViTs) that extract high-dimensional embeddings from raw pixels (e.g., UNI, CONCH, H-optimus-0).
+2. **`downstream`**: Task-specific neural network heads (e.g., ABMIL, DETR, UNet, Classifiers) that accept pre-extracted embeddings to predict diagnostic labels or annotations.
+3. **`inference`**: The orchestrating training framework. It wraps the downstream models into a `MultiHeadModel`, handles gradients via the `Inferencer`, and defines the strict tensor typing interfaces (`utility.py`).
 
-1. **Backbone**: Frozen or LoRA-tuned Vision Transformers (e.g., UNI, CONCH, Virchow) that extract patch and tile-level representations.
-2. **Inferencer**: The orchestrator that takes raw features, builds the `MultiHeadModel`, routes inputs to the correct downstream heads, manages the `MultiModalLoss`, and computes metrics using `MultiModalPredict`.
-3. **Downstream**: The individual task heads. All downstream models take features of shape `(B, N, F)` where `B` is batch size, `N` is sequence length, and `F` is the feature dimension.
+---
 
-## Downstream Models
+## 1. Backbone (`apeiron/model/backbone`)
 
-The downstream modeling ecosystem is split into distinct paradigms that operate simultaneously over the same shared features. This allows a single pass of features to predict slide-level classes, tile-level segmentations, detect objects, and generate text descriptions.
+### `Backbone` (`backbone.py`)
+**Description**: The model registry and loader for Foundation Models. It ensures that massive ViTs are downloaded, cached locally, and loaded into GPU memory efficiently.
+*   **Initialization Inputs**: 
+    *   `models_save_dir` *(str or Path)*: Directory to cache `.pth` weights.
+    *   `device` *(str, optional)*: `'cuda'` or `'cpu'`. Auto-detects if None.
+*   **`select_model(model_name)`**:
+    *   **Inputs**: `model_name` *(Literal)*: Must be one of `['hop0', 'hop1', 'vir1', 'vir2', 'ch15', 'uni2h', 'mstar', 'dino3']`.
+    *   **Outputs**: Changes internal state to the requested model path.
+*   **`create_model(model_name=None, zero_shot=False)`**:
+    *   **Inputs**: 
+        *   `model_name` *(str, optional)*: Overrides selected model if provided.
+        *   `zero_shot` *(bool, default=False)*: If True, uses text-aligned contrastive weights (if the model supports it) instead of plain image weights.
+    *   **Description**: Physically loads the model weights into `self.model` and attaches the image transforms to `self.transform`. It automatically wraps models with `FmWrappers` to ensure *all* models standardize their outputs to return both `[CLS]` tokens and spatial patch tokens.
 
-### `MultiHeadModel` (`downstream/unify.py`)
-This is the master container. It instantiates the correct combination of models based on the `inf_models` argument (e.g., `['abmil', 'unet']`).
-- **Input**: `features (B, N, F)`, optional `text (B,)` or `list[str]`
-- **Output**: `ModelData` object containing logits, attention scores, object boxes, and embeddings across all active heads.
+### `Extractor` (`extract.py`)
+**Description**: Inherited by `Analyzer`, it acts as the interface to stream arrays of pixels through the `Backbone`.
+*   **`extract_tiles(batch_size=300, num_workers=4, ext_patch_strategy="discard")`**:
+    *   **Inputs**: 
+        *   `batch_size` *(int, default=300)*: Max arrays processed simultaneously on GPU.
+        *   `num_workers` *(int, default=4)*: Multi-processing data loaders.
+        *   `ext_patch_strategy` *(Literal)*: Must be one of `["aggr", "discard", "keep"]`.
+            *   `'discard'`: Only keep class tokens (lowest memory, shape `N×F`).
+            *   `'keep'`: Keep full spatial hierarchy including all patch tokens (shape `N×P×F`).
+            *   `'aggr'`: Applies maximum/mean pooling across patch tokens (shape `N×F`).
+    *   **Outputs**: Computes and stores the final embeddings and grid coordinates into `self.proc_ext`.
 
-### 1. Classification (CLS)
-- **`mlp`**: Simple Multi-Layer Perceptron. Averages `(B, N, F)` into `(B, F)` and projects to classes.
-- **Input Shape**: `(B, N, F)` -> **Output Shape**: `(B, C)`
+---
 
-### 2. Multiple Instance Learning (MIL)
-Models designed to aggregate variable-length bags of instances (tiles) into a single slide-level prediction, while computing attention scores for interpretability.
-- **`abmil`**: Attention-Based MIL (Ilse et al.). Computes a scalar attention score for each instance, computes a weighted average of features, and projects to classes.
-- **`transmil`**: Correlated MIL using a Transformer encoder layer. Adds positional embeddings (PPEG) and self-attention before aggregating.
-- **Input Shape**: `(B, N, F)` -> **Output Shape**: 
-  - Logits: `(B, C)`
-  - Attention: `(B, N, 1)`
+## 2. Downstream Models (`apeiron/model/downstream`)
 
-### 3. Segmentation (SEG)
-Models that assign a class label to every individual token/tile in the sequence. If the input is a grid of tiles or patches, these act as dense prediction networks.
-- **`unet`**: 1D U-Net operating on the sequence dimension.
-- **`fpn`**: Feature Pyramid Network over the sequence.
-- **Input Shape**: `(B, N, F)` -> **Output Shape**: `(B, N, C)`
+All downstream models act strictly as PyTorch `nn.Module` classes. They do not handle raw pixels. They exclusively accept pre-computed `(N, F)` or `(B, N, F)` feature embeddings.
 
-### 4. Vision-Language Modeling (VLM)
-Models designed to align histology image features with text or generate text from them.
-- **`gen_vlm`**: Generative VLM. Uses a Perceiver Resampler to compress `(B, N, F)` into a fixed number of visual tokens `(B, K, H)`, concatenates them with text embeddings, and uses a causal language model (e.g., Llama) to generate text autoregressively.
-  - **Output**: Generative Cross-Entropy Loss, Text Generation function.
-- **`con_vlm`**: Contrastive VLM. Aligns image features and text embeddings using an InfoNCE loss (CLIP-style). Uses a frozen text encoder (e.g., BioBERT/PubMedBERT).
-  - **Output**: Contrastive InfoNCE Loss, Embedding functions.
+### Architecture Contract (`__init__.py`)
+Every downstream model (e.g., `ABMIL`, `ROIMIL`, `SparseDETR`, `UNet`) must conform to the following API so `Inferencer` can hook into them automatically:
 
-### 5. Object Detection (OBJ)
-Models that predict bounding boxes and class labels from a set of features.
-- **`detr`**: Transformer-based detection head (inspired by DETR). Uses learned object queries and cross-attention over the `(B, N, F)` features to predict bounding boxes and classes.
-- **Input Shape**: `(B, N, F)` -> **Output Shape**:
-  - Boxes: `(B, Num_Queries, 4)`
-  - Classes: `(B, Num_Queries, C + 1)` (includes 'no-object' class)
+*   **`forward(self, features: torch.Tensor, **kwargs) -> dict`**:
+    *   **Input**: `features` `(B, N, F)`. Can also receive `objects` (ROI bags) or `text` via kwargs.
+    *   **Output**: A dictionary mapping to `HeadData` keys (e.g. `lbl_logits`, `ann_logits`, `obj_classes`, `attention`).
+*   **`loss(self, **kwargs) -> dict`**:
+    *   **Input**: Ground truth targets (`label`, `annotation`, `objects`).
+    *   **Output**: A dictionary mapped to objective categories (e.g. `{'label': {'lbl_loss': tensor(0.5)}}`).
+*   **`predict(self, **kwargs) -> dict`**:
+    *   **Output**: Returns post-processed detached Numpy predictions (e.g., `pred_lbl` probabilities, `pred_obj` bounding dictionaries with masks).
+*   **`metric(self, threshold=0.5, **kwargs) -> dict`**:
+    *   **Output**: Computes F1, AUC, Dice, etc. (e.g., `{'label': {'auc': 0.85}}`).
 
-## Multi-Modal Loss & Prediction
+---
 
-Because APEIRON runs multiple heads simultaneously, it requires a unified system to handle the loss and metric calculations for all branches.
+## 3. Inference Engine (`apeiron/model/inference`)
 
-- **`MultiModalLoss` (`downstream/loss/unify.py`)**: Computes the specific loss for each branch (e.g., Hard Cross-Entropy for `abmil`, Dice Loss for `unet`, Bounding Box L1 + GIoU for `detr`). It then wraps all losses using `AutomaticWeightedLoss` (AWL) to dynamically balance the gradients during training.
-- **`MultiModalPredict` (`inference/predictor.py`)**: Takes the raw logits from `MultiHeadModel`, applies the appropriate activation (Sigmoid/Softmax), computes discrete predictions based on thresholds, and calculates branch-specific metrics (Accuracy, AUROC, F1, Dice, mAP).
+This module manages PyTorch training loops, dynamic loss balancing, and data structures.
 
-## Data Flow Summary
+### Data Structures (`utility.py`)
+Defines strictly typed PyTorch dataclasses passed between the Data `Collector` and the Neural Network. These essentially catch the `PreData` from the `entity` module and store the downstream network's transformations over it.
 
-```
-1. Image (WSI / Tiles)
-       │
-       ▼
-2. Backbone (e.g., H-optimus-0) -> Extractor -> (N, F) features
-       │
-       ▼
-3. Batching / Dataloader -> (B, N, F)
-       │
-       ▼
-4. MultiHeadModel (Inferencer)
-       │
-       ├──> ABMIL -> (B, C) slide logits, (B, N, 1) attention
-       ├──> UNET  -> (B, N, C) tile-level logits
-       └──> VLM   -> Generative Loss / Contrastive Embeddings
-       │
-       ▼
-5. MultiModalLoss -> Dynamically weighted composite loss
-       │
-       ▼
-6. MultiModalPredict -> ModelData (Losses, Metrics, Predictions)
-```
+#### 1. `HeadData`
+Stores the raw, unnormalized network outputs (logits and raw attention) directly from the `forward()` pass. These remain on the GPU until explicitly moved.
+*   `attention`: `(B, 1, N)` or `(B, C, N)` unnormalized attention scores.
+*   `lbl_logits`: `(B, C)` slide-level class logits.
+*   `ann_logits`: `(B, N, C)` tile-level annotation logits.
+*   `obj_classes`: `(B, Q, C+1)` per-query class logits (includes 'no-object' class).
+*   `obj_masks`: `(B, Q, N)` per-query binary mask logits.
+*   `vis_emb` / `img_emb`: `(B, H)` pooled visual or image embeddings.
+
+#### 2. `PredData`
+Stores post-processed predictions (Sigmoid/Softmax applied) that have been detached from the computational graph and pushed to the CPU as NumPy arrays.
+*   `pred_atn`: `(B, 1, N)` normalized attention weights (e.g., via Softmax).
+*   `pred_lbl`: `(B, C)` final slide-level probabilities.
+*   `pred_ann`: `(B, N, C)` final tile-level probabilities.
+*   `pred_obj`: A `list` (length `B`) of lists containing dictionaries for each detected ROI: `{"class": int, "mask": np.ndarray(N,) bool, "scores": float}`.
+*   `pred_txt`: A `list[str]` of generated text strings.
+*   **Post-processing fields**: `pred_crd` (coordinates), `pred_scr` (scores), and `pred_data_type` used by the Visualiser to render overlays.
+
+#### 3. `Objectives`
+A container mapping raw PyTorch loss or metric tensors to their specific objective categories.
+*   `label`: Slide-level objectives (e.g. `{'lbl_loss': tensor(0.5)}` or `{'auc': 0.85}`).
+*   `annotation`: Tile-level objectives (e.g. `{'ann_loss': tensor(0.3)}`).
+*   `objects`: ROI-level detection objectives (e.g. `{'obj_loss': tensor(1.2)}`).
+*   `text`: Text-generation objectives (e.g. `{'gen_loss': tensor(2.1)}`).
+
+#### 4. `ModelData`
+The unified state container holding `head`, `pred`, `loss`, and `metric` during a training step.
+*   **`assign(mode, **kwargs)`**: Automatically routes dictionaries to the correct sub-dataclass. For example, `assign('head', lbl_logits=x)` places `x` directly into `self.head.lbl_logits`.
+*   **`composite_loss(final_loss, **importance)`**: Caches the auto-weighted `final_loss` used for `backward()` alongside the homoscedastic uncertainty importances.
+
+---
+
+### `MultiHeadModel` (`composite.py`)
+**Description**: A dynamic `nn.Module` that accepts multiple `inf_models`. It routes the input embeddings through a `SharedEncoder` (to project raw backbone dimensions, e.g., 1536 -> 256), and then parallelizes the features across multiple independent downstream heads (e.g., combining `abmil` + `detr` in one pass).
+*   **Initialization Inputs**:
+    *   `in_features` *(int)*: Dimension of input backbone embeddings (e.g. 768 or 1536).
+    *   `mode` *(str, optional)*: `'slide'` or `'tile'`.
+    *   `inf_models` *(str or list[str], default='abmil')*: A list of models chosen from `['abmil', 'gatmil', 'roimil', 'classifier', 'unet', 'spconv', 'detr', 'generative', 'contrastive']`.
+    *   *Also passes all `kwargs` (like loss types and classes) down to `choose_inferencer()`*.
+*   **`forward(features, **kwargs)`**: Routes data to all sub-heads and compiles their outputs into a single `ModelData` object.
+*   **`AutomaticWeightedLoss`**: Dynamically weights multi-task losses using learnable variances (homoscedastic uncertainty) so you do not have to manually tune loss ratios between Slide prediction and ROI detection.
+
+### `Inferencer` (`inferencer.py`)
+**Description**: The frontend controller. The `Collector` uses this class to run training epochs. It handles GPU data transferring, optimizer stepping, and evaluation.
+*   **Initialization Inputs**: `device` *(str, optional)*: Explicitly define `'cuda'` or `'cpu'`.
+*   **`setup_inferencer(...)`**:
+    *   **Description**: Initializes the `MultiHeadModel`, sets up the PyTorch optimizers, and prepares the loss criterions. 
+    *   **Inputs**:
+        *   `in_features` *(int)*: Backbone feature size.
+        *   `inf_models` *(str or list[str], default='abmil')*: Head(s) to initialize.
+        *   `mode` *(str, optional)*: `'slide'` or `'tile'`.
+        *   `lbl_n_classes` / `ann_n_classes` *(int, optional)*: Number of target classes for slides / tiles.
+        *   `lbl_loss_type` / `ann_loss_type` *(str, default='bce')*: Objective functions (`'bce'`, `'hard_ce'`, `'mse'`).
+        *   `lbl_cls_weights` / `ann_cls_weights` *(dict, optional)*: Class imbalance weighting.
+        *   `lr` *(float, default=1e-4)*: Learning rate.
+        *   `optimizer` *(str, default='adam')*: Type of optimizer.
+        *   `weight_decay` *(float, default=0.0)*: Weight decay / L2 Penalty.
+        *   `scheduler` *(str, optional)*: Learning rate scheduler type.
+        *   `chkp_path` *(str, optional)*: Preload weights if path is provided.
+*   **`train_epoch(data_collector)`**:
+    *   **Inputs**: `data_collector` *(Generator)* yielding dictionaries of `(features, label, annotation)`.
+    *   **Outputs**: Accumulates gradients across the batch size, runs `optimizer.step()`, and returns aggregated metrics/loss dicts.
+*   **`eval_epoch(data_collector, threshold=0.5)`**:
+    *   **Inputs**: `data_collector` *(Generator)* and `threshold` *(float, default=0.5)* for binarizing sigmoid predictions.
+    *   **Outputs**: Returns a tuple `(epoch_losses, epoch_metrics, predictions)`.
+*   **`predict_data(data, threshold=0.5, run_metric=True)`**:
+    *   **Description**: A quick single-sample forward pass. Moves `data` dict to CUDA, runs inference, moves predictions back to CPU, and yields the `ModelData` result.
+*   **`save_inferencer(chkp_path, epoch=None)` / `load_inferencer(chkp_path)`**: Safely saves/loads optimizer states and model `.pth` dicts.

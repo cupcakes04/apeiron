@@ -341,7 +341,7 @@ class Collector(Manager, Searcher):
         Returns:
             dict: Training history with per-epoch loss dicts.
         """
-        self.analyzer.setup_optimizer(n_epochs=100, **kwargs)
+        self.analyzer.setup_optimizer(n_epochs=n_epochs, **kwargs)
         self.train_history = {}
         self.valid_history = {}
 

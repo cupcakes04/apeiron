@@ -6,6 +6,7 @@ from .generative import GenerativeVLM
 from .detr import SparseDETR
 from .spconv import SparseUNet
 from .unet import UNet
+from .roimil import ROIMIL
 
 """
 Downstream Model API Contract

@@ -248,31 +248,118 @@ Place a `config.yaml` in your project directory to define extraction and downstr
 ```yaml
 overview_mpp: 8.0
 
+norm_configs: 
+  'method': 'macenko'
+  'target_name': 'sample2.png'
+  
 slide_ext:
   ext_configs:
-    ext_enc: 224             # Encoder window size (pixels)
-    ext_mpp: 0.5             # Extraction resolution
-    ext_model: hop0          # Foundational model key
-    ext_patch_strategy: discard
+    'ext_enc': 224             # Encoder window size (pixels)
+    'ext_mpp': 0.5             # Extraction resolution
+    'ext_model': hop0          # Foundational model key
+    'ext_patch_strategy': 'discard'
   coords_configs:
-    method: morphological    
-    ann_mask: false           
-    tile_threshold: 0.25     
-    stride: 0.0              
+    'method': 'otsu'
+    'ann_mask': False
+    'tile_threshold': 0.25
+    'stride': 0.0
   feats_configs:
-    window_level: tile       # 'grid', 'tile', 'patch'
-    patch_to_tile: discard   
-    grid_size: 2             
+    'window_level': 'tile'     # 'grid', 'tile', 'patch'
+    'patch_to_tile': 'discard'
+    'grid_size': 2
+
+tile_ext:
+  ext_configs:
+    'ext_enc': 224
+    'ext_mpp': 0.5
+    'ext_model': "hop0"
+    'ext_patch_strategy': 'keep'
+    'ext_type': 'standalone'
+  coords_configs:
+    'stride': 0.0
+  feats_configs:
+    'window_level': 'tile'
+    'patch_to_tile': 'mean'
+    'grid_size': 8
 
 slide_gt:
-  ann_configs:
-    ann_type: shape          # 'shape' (JSON) or 'pixel' (mask)
-    supervision: false          # Bag annotation regions as 'pseudo-slide'
-    class_id_map:
-      '0': background
-      '1': tumor
-  label_configs:
-    label_id_map:
-      '0': background
-      '1': tumor
+  'ann_configs':
+    'ann_type': 'shape'          # 'shape' (JSON) or 'pixel' (mask)
+    'supervision': false         # Bag annotation regions as 'pseudo-slide'
+    'background_ratio': 0.2
+    'class_id_map':
+      '0': 'background'
+      '1': 'gleason_3'
+      '2': 'gleason_4'
+      '3': 'gleason_5'
+      '4': 'normal'
+      '5': 'stroma'
+    'class_id_weights':
+      '0': 0.2
+      '1': 1
+      '2': 1
+      '3': 1
+      '4': 0.5
+      '5': 0.5
+  'label_configs':
+    'class_id_map':
+      '0': 'background'
+      '1': 'gleason_3'
+      '2': 'gleason_4'
+      '3': 'gleason_5'
+      '4': 'normal'
+      '5': 'stroma'
+    'class_id_weights':
+      '0': 0.2
+      '1': 1
+      '2': 1
+      '3': 1
+      '4': 0.5
+      '5': 0.5
+
+tile_gt:
+  'label_configs':
+    'class_id_map':
+      '0': 'background'
+      '1': 'gleason_3'
+      '2': 'gleason_4'
+      '3': 'gleason_5'
+      '4': 'normal'
+      '5': 'stroma'
+    'class_id_weights':
+      '0': 0.2
+      '1': 1
+      '2': 1
+      '3': 1
+      '4': 0.5
+      '5': 0.5
+
+slide_downstream:
+  'model_configs':
+    # 'inf_models': ['classifier', 'generative', 'contrastive', 'abmil', 'gatmil', 'roimil', 'unet', 'spconv', 'detr']
+    'inf_models': ['roimil']
+    'lbl_loss_type': 'soft_ce'
+    'ann_loss_type': 'soft_ce'
+  'train_configs':
+    'lr': 0.0001
+    'optimizer': 'adam'
+    'weight_decay': 0.0
+    'scheduler': null
+  'split_configs':
+    'train_ratio': 0.8
+    'auto_split': true
+
+tile_downstream:
+  'model_configs':
+    'inf_models':  ['classifier', 'generative', 'contrastive']
+    'lbl_loss_type': 'soft_ce'
+  'train_configs':
+    'lr': 0.0001
+    'optimizer': 'adam'
+    'weight_decay': 0.0
+    'scheduler': null
+  'split_configs':
+    'train_ratio': 0.8
+    'auto_split': true
+
 ```
