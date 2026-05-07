@@ -38,6 +38,8 @@ Used to store fully extracted features and their computed clustering/dimensional
 class ProcessedExt:
     coords: np.ndarray              # Base coordinates (N, 2)
     features: np.ndarray            # Primary feature embeddings (N, F)
+    coords_size: int
+    feats_size: int
     feat_color: np.ndarray          # (N, 3) RGB values for UMAP/PCA plots
     feat_clusters: np.ndarray       # (N,) Int cluster assignments (e.g. KMeans)
     feat_score: np.ndarray          # (N,) Anomaly/Similarity ranking scores
@@ -48,10 +50,11 @@ Defines how coordinates and matrices should map onto the visual thumbnails.
 ```python
 @dataclass
 class VizData:
-    coords: np.ndarray              # Where to draw
-    rgb: np.ndarray                 # (N, 3) colors to assign each coord
-    sizes: np.ndarray               # (N,) Sizes of the markers
-    shapes: list                    # (N,) Shape identifiers ('s' square, 'o' circle)
+    draw_coords: np.ndarray              # Where to draw
+    draw_colors: np.ndarray
+    color_map: tuple | list | None = None
+    show: Callable | None = None
+    hist: Callable | None = None
 ```
 
 ### Modalities and Formats

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 MODALITIES = ['label', 'annotation' , 'objects', 'text']
 LOSS_MODALITIES = ['lbl_loss', 'ann_loss', 'obj_loss', 'gen_loss', 'con_loss']
-INF_MODELS = ['abmil', 'gatmil', 'roimil', 'classifier', 'unet', 'spconv', 'detr', 'generative', 'contrastive']
+INF_MODELS = ['abmil', 'gatmil', 'roimil', 'mask2f', 'classifier', 'unet', 'spconv', 'detr', 'generative', 'contrastive']
             
 @dataclass
 class HeadData:
@@ -26,7 +26,7 @@ class PredData:
     pred_atn: np.ndarray | None = None       # (B, 1, N) normalized attention weights
     pred_lbl: np.ndarray | None = None       # (B, C) probabilities/predictions for slide
     pred_ann: np.ndarray | None = None       # (B, N, C) probabilities/predictions for tiles
-    pred_obj: list | None = None             # list (length B) of lists containing dicts: {"class": int, "mask": np.ndarray(N,) bool, "scores": float}
+    pred_obj: list | None = None             # list (length B) of lists containing dicts: {"ids": list[int], "labels": np.ndarray(C,), "scores": float}
     pred_txt: list | None = None             # list[str] (length B) of generated text strings
     
     # Post-processed predictions
@@ -112,7 +112,7 @@ def choose_inferencer(
             lbl_cls_weights = lbl_cls_weights, 
         )
 
-    if inf_model == 'gatmil':
+    elif inf_model == 'gatmil':
         inferencer = GATMIL(
             in_features = in_features,
             lbl_n_classes = lbl_n_classes,
@@ -124,7 +124,7 @@ def choose_inferencer(
             lbl_cls_weights = lbl_cls_weights, 
         )
 
-    if inf_model == 'roimil':
+    elif inf_model == 'roimil':
         inferencer = ROIMIL(
             in_features = in_features,
             lbl_n_classes = lbl_n_classes,
@@ -132,12 +132,26 @@ def choose_inferencer(
             embed_dim = 256,
             dropout = 0.25,
             attn_dim = 128,
-            k_neighbors = 32,
-            num_heads = 4,
             lbl_loss_type = lbl_loss_type, 
             lbl_cls_weights = lbl_cls_weights, 
             ann_loss_type = ann_loss_type, 
             ann_cls_weights = ann_cls_weights, 
+        )
+        
+    elif inf_model == 'mask2f':
+        inferencer = Mask2FormerMIL(
+            in_features = in_features,
+            lbl_n_classes = lbl_n_classes,
+            ann_n_classes = ann_n_classes,
+            embed_dim = 256,
+            dropout = 0.25,
+            attn_dim = 128,
+            lbl_loss_type = lbl_loss_type, 
+            lbl_cls_weights = lbl_cls_weights, 
+            ann_loss_type = ann_loss_type, 
+            ann_cls_weights = ann_cls_weights, 
+            num_heads = 4,
+            num_layers = 2,
         )
 
     elif inf_model == 'classifier':

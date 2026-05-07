@@ -7,20 +7,23 @@ PRED_TYPES = {
     'focal': 'softmax',
     'soft_ce': 'softmax',
     'kl_div': 'softmax',
-    'mse': None,
-    'mae': None,
+    'mse': 'regression',
+    'mae': 'regression',
     'bce': 'sigmoid',
     'multi_fc': 'sigmoid',
 }
 
 def check_mode(loss_type):
     mode = PRED_TYPES[loss_type]
-    if mode not in ('softmax', 'sigmoid'):
-        raise ValueError(f"mode must be 'softmax' or 'sigmoid', got '{mode}'")
+    if mode not in ('softmax', 'sigmoid', 'regression'):
+        raise ValueError(f"mode must be 'regression', 'softmax' or 'sigmoid', got '{mode}'")
     return mode
 
 def apply_pred(mode, logits):
     if mode == 'softmax':
         return F.softmax(logits, dim=-1)   # (B, C)
-    else:
+    elif mode == 'sigmoid':
         return logits.sigmoid()            # (B, C)
+    elif mode == 'regression':
+        return logits
+    

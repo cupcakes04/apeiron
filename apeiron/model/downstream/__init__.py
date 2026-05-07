@@ -7,6 +7,7 @@ from .detr import SparseDETR
 from .spconv import SparseUNet
 from .unet import UNet
 from .roimil import ROIMIL
+from .mask2f import Mask2FormerMIL
 
 """
 Downstream Model API Contract

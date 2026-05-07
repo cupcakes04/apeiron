@@ -85,8 +85,6 @@ class Analyzer(Extractor, Processor, Inferencer):
         self.model_name = self.backbone.model_name
         self.model = self.backbone.model
         self.transform = self.backbone.transform
-        self.device = self.backbone.device
-        
         self.model_dim = self.model_feats_dim[self.model_name]
 
         

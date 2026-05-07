@@ -61,6 +61,9 @@ class Annotator:
         self.pixel_ann_mask: np.ndarray = None
         self.shape_ann_json: dict = {}
 
+        self.reset_anns()
+
+    def reset_anns(self):
         self.annotation: np.ndarray = None
         self.objects: list[dict] = []
         
@@ -107,6 +110,7 @@ class Annotator:
                 instead of class fractions. Default False.
         """
         if ann_path is None:
+            self.reset_anns()
             return
 
         if self.ann_type == 'shape':
@@ -327,7 +331,7 @@ class Annotator:
         )
         return mask
 
-    def _calc_mask_scales(self, target_scale=16, tolerance=0.001):
+    def _calc_mask_scales(self, target_scale=16, tolerance=0.01):
         """Validate and normalize the pixel annotation mask scale.
 
         Checks whether the mask dimensions match the expected downscale

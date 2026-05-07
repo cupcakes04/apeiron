@@ -106,7 +106,6 @@ class Collector(Manager, Searcher):
 
             # 1. Initialize Analyzer for the specific slide
             self.serve_slide_analyzer(slide_id, data_modes='embeddings')
-            self.analyzer.prepare_features(**self.slide_feats_configs)
 
             # 2. Process Annotations
             if cache and slide_id in self.slides_collected_ann:
@@ -168,7 +167,6 @@ class Collector(Manager, Searcher):
             
             # 3. Extract Features from Analyzer
             self.serve_tile_analyzer(tile_class)
-            self.analyzer.prepare_features(**self.tile_feats_configs)
 
             # 4. Filter with requested collect_ids
             if collect_ids:
@@ -402,6 +400,98 @@ class Collector(Manager, Searcher):
         return self.analyzer.eval_epoch(eval_collector)
 
 
+    def plot_history(self, figsize=(15, 5)):
+        """Plot the training and validation history across epochs.
+        
+        Plots main modality losses, composite loss, and overall accuracy metrics.
+        """
+        # Pull from manifest if available (preserves history across sessions)
+        mnf = self.manifest.get(self.mnf_id, {})
+        train_hist = mnf.get('train_history', self.train_history)
+        valid_hist = mnf.get('valid_history', self.valid_history)
+
+        if not train_hist:
+            print("No training history available to plot.")
+            return
+
+        # Ensure epochs are sorted integers
+        epochs = sorted([int(k) for k in train_hist.keys()])
+        if not epochs: return
+        
+        # 1. Extract data points
+        # Structure: plots_data[base_name] = {'train': (epochs, values), 'valid': (epochs, values)}
+        plots_data = {}
+        
+        for epoch in epochs:
+            # Manifest keys might be strings if loaded from JSON
+            str_epoch = str(epoch)
+            
+            # Helper to get the right epoch key (int or str)
+            def get_epoch_data(hist):
+                if epoch in hist: return hist[epoch]
+                if str_epoch in hist: return hist[str_epoch]
+                return None
+
+            for split, hist in [('train', train_hist), ('valid', valid_hist)]:
+                epoch_data = get_epoch_data(hist)
+                if not epoch_data: continue
+                
+                # Extract Losses
+                for modality, res in epoch_data.get('loss', {}).items():
+                    for metric_name, val in res.items():
+                        if modality == 'composite' and metric_name != 'final_loss':
+                            continue
+                        base_name = f"Loss | {modality.capitalize()}: {metric_name}"
+                        if base_name not in plots_data: plots_data[base_name] = {'train': ([], []), 'valid': ([], [])}
+                        plots_data[base_name][split][0].append(epoch)
+                        plots_data[base_name][split][1].append(val)
+                        
+                # Extract Metrics (Include all aggregate scalars, exclude per-class for clarity)
+                import re
+                for modality, res in epoch_data.get('metric', {}).items():
+                    for metric_name, val in res.items():
+                        if isinstance(val, (int, float)):
+                            # Filter out per-class metrics to avoid clutter like f1_c0, acc_c1
+                            if re.search(r'(_c\d+|class_|_cls)', metric_name.lower()):
+                                continue
+                            base_name = f"Metric | {modality.capitalize()}: {metric_name}"
+                            if base_name not in plots_data: plots_data[base_name] = {'train': ([], []), 'valid': ([], [])}
+                            plots_data[base_name][split][0].append(epoch)
+                            plots_data[base_name][split][1].append(val)
+
+        # 2. Plotting
+        total_plots = len(plots_data)
+        if total_plots == 0:
+            return
+            
+        cols = min(3, total_plots)
+        rows = (total_plots + cols - 1) // cols
+        
+        fig, axes = plt.subplots(rows, cols, figsize=(15, 4 * rows))
+        if total_plots == 1:
+            axes = [axes]
+        elif hasattr(axes, 'flatten'):
+            axes = axes.flatten()
+            
+        for i, (base_name, data) in enumerate(plots_data.items()):
+            ax = axes[i]
+            for split, (eps, vals) in data.items():
+                if eps:
+                    linestyle = '-' if split == 'train' else '--'
+                    ax.plot(eps, vals, label=split.capitalize(), linestyle=linestyle)
+            ax.set_title(base_name, fontsize=11)
+            ax.set_xlabel('Epoch', fontsize=9)
+            ax.grid(True, linestyle=':', alpha=0.6)
+            ax.legend(fontsize=9)
+            
+        # Hide any unused subplots
+        for i in range(total_plots, len(axes)):
+            axes[i].set_visible(False)
+            
+        plt.tight_layout()
+        plt.show()
+
+
     # |-----------------------------------------------|
     # |-------------- Similarity Search --------------|
     # |-----------------------------------------------|
@@ -418,7 +508,6 @@ class Collector(Manager, Searcher):
                 for _, row in self.shuffle_df(self.selected_slide_dataset, shuffle=True).iterrows():
                     slide_id = str(row['slide_id'])
                     self.serve_slide_analyzer(slide_id, data_modes='embeddings')
-                    self.analyzer.prepare_features(**self.slide_feats_configs)
                     img_emb = self.analyzer.get_contrastive_embeddings(features=self.analyzer.proc_ext.features).get('img_emb')
                     yield {
                         'id': slide_id, 'features': self.analyzer.proc_ext.features, 
@@ -430,7 +519,6 @@ class Collector(Manager, Searcher):
                 for tile_class, tile_data in self.tile_data_paths.items():
                     new_tile_ids = np.array(tile_data['tile_ids'])
                     self.serve_tile_analyzer(tile_class)
-                    self.analyzer.prepare_features(**self.tile_feats_configs)
                     img_emb = self.analyzer.get_contrastive_embeddings(features=self.analyzer.proc_ext.features).get('img_emb')
                     yield {
                         'id': new_tile_ids, 'features': self.analyzer.proc_ext.features, 
@@ -473,7 +561,6 @@ class Collector(Manager, Searcher):
         # 2. Search for similar ROI in features
         if 'roi' in query_mode and feat_res is not None:
             self.serve_slide_analyzer(query_feat_id, data_modes='embeddings')
-            self.analyzer.prepare_features(**self.slide_feats_configs)
             query_features = self.analyzer.proc_ext.features[query_roi_id]
 
             # Loop starting from the second row (index 1 onwards)
@@ -481,7 +568,6 @@ class Collector(Manager, Searcher):
             for _, row in feat_res.iloc[1:].iterrows():
                 tgt_emb_id = row['id']
                 self.serve_slide_analyzer(tgt_emb_id, data_modes='embeddings')
-                self.analyzer.prepare_features(**self.slide_feats_configs)
                 dfs_dict[tgt_emb_id] = self.find_similar_regions(
                     target_features=self.analyzer.proc_ext.features,
                     target_coords=self.analyzer.proc_ext.coords,

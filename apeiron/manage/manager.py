@@ -44,7 +44,7 @@ class Manager(Registry, ArtifactIO):
     # |-----------------------------------------------|
 
 
-    def __init__(self, backbone: Backbone, **kwargs):
+    def __init__(self, backbone: Backbone, device: Literal['cuda', 'cpu'] = None, **kwargs):
         super().__init__(**kwargs)
 
         self.config: dict
@@ -53,6 +53,7 @@ class Manager(Registry, ArtifactIO):
         self.selected_slide_dataset: pd.DataFrame
         self.selected_tile_dataset: pd.DataFrame
 
+        self.device = device
         self.analyzer: Analyzer
         self.backbone = backbone
     
@@ -116,7 +117,10 @@ class Manager(Registry, ArtifactIO):
         self.tile_downstream_configs = self.config.get('tile_downstream')
 
         # Start query & prepare
-        self.analyzer = Analyzer(self.backbone, ext_enc=self.slide_ext_configs['ext_enc'], ext_mpp=self.slide_ext_configs['ext_mpp'])
+        self.analyzer = Analyzer(
+            self.backbone, device=self.device,
+            ext_enc=self.slide_ext_configs['ext_enc'], ext_mpp=self.slide_ext_configs['ext_mpp']
+        )
         self.analyzer.load_norm_configs(self.norm_configs)
         self.analyzer.setup_ann_configs(**self.slide_ann_configs)
         self.query_slide_dataset(select_all=True)
@@ -384,7 +388,6 @@ class Manager(Registry, ArtifactIO):
                 # Compute slide features
                 self.analyzer.open_slide(slide_path)
                 self.assign_analyzer(slide_id, "embeddings")
-                self.analyzer.prepare_features(**self.slide_feats_configs)
                 self.analyzer.compute_feats_color(method='pca')
 
             self.io_feats_color_out(
@@ -431,6 +434,7 @@ class Manager(Registry, ArtifactIO):
         # Assign only
         if any(k in data_modes for k in ['embeddings', 'req', 'ann', 'pred', 'all']):
             self.analyzer.embeddings = self.io_embeddings_s_load(slide_id)
+            self.analyzer.prepare_features(**self.slide_feats_configs)
 
         if any(k in data_modes for k in ['feats_color', 'req', 'ann', 'all']):
             data_dict = self.io_feats_color_load(slide_id)
@@ -443,7 +447,6 @@ class Manager(Registry, ArtifactIO):
             self.analyzer.prepare_annotations(ann_path, ann_type)
             
         if any(k in data_modes for k in ['prediction', 'pred', 'all']):
-            self.analyzer.prepare_features(**self.slide_feats_configs)
             self.analyzer.predict(mode='slide')
             
             
@@ -488,12 +491,16 @@ class Manager(Registry, ArtifactIO):
             Analyzer: Configured analyzer with loaded tile embeddings.
         """
         if not self.available_modes['tile']: return
+
         # Avoid reopening and reseting openned analyzer
         if tile_class != self.cur_data:
             self.analyzer.open_tiles(self.tile_data_paths[tile_class]['tile_paths'], 
                                      base_mpp=self.tile_data_paths[tile_class]['base_mpp'])
             self.cur_data = tile_class
+
+        # Only 1 purpose which is embeddings
         self.analyzer.embeddings = self.tile_data_paths[tile_class]['embeddings']
+        self.analyzer.prepare_features(**self.tile_feats_configs)
         return self.analyzer
         
             

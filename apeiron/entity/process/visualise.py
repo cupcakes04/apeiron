@@ -4,6 +4,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from .helper.features import *
 from apeiron.model.inference import ModelData
 from typing import Literal, Callable
@@ -52,18 +53,19 @@ class Visualiser:
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.draw_coords: np.ndarray
-        self.draw_colors: np.ndarray
-        self.overlay: np.ndarray
+        self.draw_coords: np.ndarray = None
+        self.draw_colors: np.ndarray = None
+        self.color_map: dict = None
+        self.overlay: np.ndarray = None
 
         # Attached dataclasses
-        self.proc_ext: ProcessedExt
-        self.mdata: ModelData
+        self.proc_ext: ProcessedExt = None
+        self.mdata: ModelData = None
 
     @property
     def overlay_tools(self):
         return {
-            'draw_colors': self.draw_colors, 'draw_coords': self.draw_coords, 
+            'draw_colors': self.draw_colors, 'draw_coords': self.draw_coords, 'color_map': self.color_map,
             'slide_thumbnail': self.slide_thumbnail, 'slide_thumbnail_mpp': self.slide_thumbnail_mpp, 
             'base_mpp': self.base_mpp, 'feats_size': self.proc_ext.feats_size
         }
@@ -125,8 +127,6 @@ class Visualiser:
             - draw_colors is L,N,3 (RGB)
             - color_map is (C, 3) or None when using heatmap mode.
         """
-        color_map = None
-        
         # 1. Prepare `ann` which is (N, C)
         if mode in ['annotation', 'pred_lbl', 'pred_ann', 'pred_atn']:
             if mode == 'annotation': 
@@ -143,6 +143,9 @@ class Visualiser:
                 self.draw_coords = self.mdata.pred.pred_crd
                 heatmap_target = 0  # no multi-class attention
             
+            if ann is None: 
+                return
+            
             # Segment classes or focus on a class
             if heatmap_target is not None:
                 if isinstance(heatmap_target, str) and heatmap_target == 'all':
@@ -157,9 +160,9 @@ class Visualiser:
                 
                 colors = feats_score_to_coolwarm(heat)
                 self.draw_colors = np.expand_dims(colors, axis=0) # (1, N, 3)
-
+                self.color_map = None
             else:
-                colors, color_map = ann_percentages_to_rgb(ann)
+                colors, self.color_map = ann_percentages_to_rgb(ann)
                 self.draw_colors = np.expand_dims(colors, axis=0) # (1, N, 3)
             
             hist = ann
@@ -176,14 +179,14 @@ class Visualiser:
             else:
                 obj_list = [obj_list[0]]
 
-            self.draw_colors, color_map = obj_to_rgb(obj_list, self.draw_coords)
+            self.draw_colors, self.color_map = obj_to_rgb(obj_list, self.draw_coords)
             hist = obj_to_NC(obj_list)
         
         viz_overlay = lambda **k: self.visualise_overlay(overlay_tools=self.overlay_tools, **k)
         viz_histogram = lambda **k: self.visualise_histogram(hist=hist, **k)
         
         return VizData(
-            draw_coords=self.draw_coords, draw_colors=self.draw_colors, color_map=color_map, 
+            draw_coords=self.draw_coords, draw_colors=self.draw_colors, color_map=self.color_map, 
             show=viz_overlay, hist=viz_histogram)
 
 
@@ -194,7 +197,7 @@ class Visualiser:
 
     @staticmethod
     def draw_on_thumbnail(
-        draw_colors, draw_coords, 
+        draw_colors, draw_coords, color_map,
         slide_thumbnail, slide_thumbnail_mpp, 
         base_mpp, feats_size):
         """Paint per-tile colors onto a blank overlay matching thumbnail size.
@@ -227,7 +230,19 @@ class Visualiser:
             # Paint the patch
             overlay[y_s:y_end, x_s:x_end] = colors_flat[i] * 255
 
-        return overlay
+        # 3. Create Legend Handles
+        # We iterate through your color map to build the labels
+        if color_map is None:
+            return overlay, []
+
+        legend_handles = []
+        for i, color in enumerate(color_map['color']):
+            # Skip background (usually index 0) if you don't want it in the legend
+            if i == 0 and np.all(color == 0):
+                continue
+            patch = mpatches.Patch(color=color, label=color_map['class'][i])
+            legend_handles.append(patch)
+        return overlay, legend_handles
 
     def visualise_overlay(self, overlay_tools=None, alpha=0.5):
         """Blend feature overlay with slide thumbnail and display.
@@ -239,18 +254,30 @@ class Visualiser:
             np.ndarray: (H, W, 3) blended image
         """
         tools = overlay_tools if overlay_tools else self.overlay_tools
-        self.overlay = self.draw_on_thumbnail(**tools)
+        self.overlay, legend_handles = self.draw_on_thumbnail(**tools)
 
-        # Blend overlay with thumbnail using alpha compositing
+        # 1. Blend overlay with thumbnail using alpha compositing
         # Only blend regions where features exist (non-zero overlay)
         mask = np.sum(self.overlay, axis=2) > 0
         blended = self.slide_thumbnail.copy()
         blended[mask] = (1 - alpha) * self.slide_thumbnail[mask] + alpha * self.overlay[mask]
 
-        # 5. Display
+        # 2. Display
         plt.figure(figsize=(15, 12))
         plt.imshow(blended)
         plt.axis('off')
+
+        # 3. Add Legend to plot
+        if len(legend_handles) > 0:
+            plt.legend(
+                handles=legend_handles, 
+                bbox_to_anchor=(1.05, 1), 
+                loc='upper left', 
+                borderaxespad=0.,
+                fontsize=12,
+                title="Gleason Classes"
+            )
+            plt.tight_layout() # Ensures legend isn't cut off
         plt.show()
         return blended
 

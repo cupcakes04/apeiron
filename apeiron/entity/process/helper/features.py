@@ -201,7 +201,7 @@ def ann_percentages_to_rgb(ann_percentages, class_colors=None):
     # 1. Setup Colors
     if class_colors is None:
         # Generate random colors for all classes
-        cmap = plt.get_cmap()
+        cmap = plt.get_cmap('tab10')
         color_map = np.array([cmap(i)[:3] for i in range(C)], dtype=np.float32)
     else:
         color_map = np.array(class_colors, dtype=np.uint8)

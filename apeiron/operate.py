@@ -28,8 +28,7 @@ class Operator:
             - project_path (str): Project directory containing config.yaml and dataset CSVs.
     """
     def __init__(self, backbone: Backbone, root_dir: str, **kwargs):
-        super().__init__(**kwargs)
-        self.collector = Collector(backbone=backbone, root_dir=root_dir)
+        self.collector = Collector(backbone=backbone, root_dir=root_dir, device=kwargs.get('device'))
     
     def setup(self, project_path: str):
         """Fully reset the operator to a new project.
@@ -86,6 +85,10 @@ class Operator:
         return self.collector.train(*args, **kwargs)
     def evaluate(self, *args, **kwargs):
         return self.collector.evaluate(*args, **kwargs)
+    def val_graphs(self, *args, **kwargs):
+        return self.collector.analyzer.val_graphs(*args, **kwargs)
+    def plot_history(self, *args, **kwargs):
+        return self.collector.plot_history(*args, **kwargs)
 
     # Additional
     def create_datasets(self, labels_path, label_col: List|str, mode: Literal['slide', 'tile'], output_path=None):

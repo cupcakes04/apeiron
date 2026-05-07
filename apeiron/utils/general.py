@@ -237,12 +237,16 @@ def extend_dict(data, **kwargs):
         data.setdefault(key, value)
     return data
 
-def get_device():
+def get_device(device=None, desc=None):
+    if device:
+        print(f"{desc} -- Device: {device}")
+        return torch.device(device)
+
     if torch.cuda.is_available():
-        print(f"Device: GPU ({torch.cuda.get_device_name(0)})")
+        print(f"{desc} -- Device: GPU ({torch.cuda.get_device_name(0)})")
         return torch.device("cuda")
     else:
-        print("Device: CPU")
+        print(f"{desc} -- Device: CPU")
         return torch.device("cpu")
 
 def np_unsqueeze(x):

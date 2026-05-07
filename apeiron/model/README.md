@@ -80,7 +80,7 @@ Stores post-processed predictions (Sigmoid/Softmax applied) that have been detac
 *   `pred_atn`: `(B, 1, N)` normalized attention weights (e.g., via Softmax).
 *   `pred_lbl`: `(B, C)` final slide-level probabilities.
 *   `pred_ann`: `(B, N, C)` final tile-level probabilities.
-*   `pred_obj`: A `list` (length `B`) of lists containing dictionaries for each detected ROI: `{"class": int, "mask": np.ndarray(N,) bool, "scores": float}`.
+*   `pred_obj`: A `list` (length `B`) of lists containing dictionaries for each detected ROI: `{"ids": int (the roi coords id), "labels": length C, "scores": float}`.
 *   `pred_txt`: A `list[str]` of generated text strings.
 *   **Post-processing fields**: `pred_crd` (coordinates), `pred_scr` (scores), and `pred_data_type` used by the Visualiser to render overlays.
 

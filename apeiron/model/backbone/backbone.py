@@ -35,14 +35,7 @@ class Backbone:
 
         super().__init__(**kwargs)
         self.models_save_dir = Path(models_save_dir)
-
-        # Check if a GPU (CUDA) is available
-        if device:
-            self.device = device
-            print(f"Device: {device}")
-        else:
-            self.device = get_device()
-                
+        self.device = get_device(device, 'backbone')
         self.model_name = None
         self.model = None
         self.transform = None

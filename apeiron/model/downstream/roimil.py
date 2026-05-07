@@ -55,6 +55,13 @@ class ROIMIL(nn.Module):
         self.roi_attention = GatedAttention(embed_dim, attn_dim)
         self.roi_classifier = nn.Linear(embed_dim, self.roi_n_classes)
 
+        # Dual-branch Late Fusion
+        self.global_fusion = nn.Sequential(
+            nn.Linear(embed_dim * 2, embed_dim),
+            nn.GELU(),
+            nn.Dropout(dropout)
+        )
+
         self.output = {}
         self.result = {}
 
@@ -63,22 +70,36 @@ class ROIMIL(nn.Module):
         h = self.encoder(features)
         B, N, D = h.shape
         
-        # Step 2: Slide-level MIL
-        a_slide = self.slide_attention(h).permute(0, 2, 1)    # (B, 1, N)
-        h_slide = torch.bmm(a_slide, h).squeeze(1)            # (B, D)
-        lbl_logits = self.slide_classifier(h_slide)           # (B, C)
-        
-        self.output = {"lbl_logits": lbl_logits, "attention": a_slide}
+        self.output = {}
 
-        # Step 3: ROI-level MIL
-        # objects is a list (length B) of lists of dicts: [{'label': [...], 'ids': [...]}, ...]
-        if objects is not None:
+        # Step 2: ROI-level MIL & Hierarchical Slide-level MIL
+        if objects is None:
+    
+            # Fallback if no objects passed at all (Standard Tile-level MIL)
+            a_slide = self.slide_attention(h).permute(0, 2, 1)               # (B, 1, N)
+            h_slide = torch.bmm(a_slide, h).squeeze(1)                       # (B, D)
+            lbl_logits = self.slide_classifier(h_slide)                      # (B, C_lbl)
+            
+            self.output["lbl_logits"] = lbl_logits
+            self.output["attention"] = a_slide
+
+        else:
             roi_logits_list = []
             roi_masks_list = []
+            
+            # Branch 1: Main Stream (Standard Slide-level MIL over ALL raw tiles)
+            a_slide = self.slide_attention(h).permute(0, 2, 1) # (B, 1, N)
+            h_slide_pool = torch.bmm(a_slide, h).squeeze(1)    # (B, D)
+            
+            # Branch 2: Assistance Stream (ROI-level MIL)
+            roi_global_list = []
+
             for b in range(B):
                 b_roi_logits = []
                 b_roi_masks = []
-                if objects[b]:
+                b_roi_pools = []
+                
+                if objects and objects[b]:
                     for roi in objects[b]:
                         ids = roi['ids']
                         if len(ids) == 0: continue
@@ -86,27 +107,50 @@ class ROIMIL(nn.Module):
                         # Extract ROI tiles -> (1, N_roi, D)
                         h_roi = h[b, ids, :].unsqueeze(0)
                         
-                        # Apply ROI MIL
+                        # Apply ROI MIL -> (1, D)
                         a_roi = self.roi_attention(h_roi).permute(0, 2, 1)
-                        h_roi_pool = torch.bmm(a_roi, h_roi).squeeze(1)
-                        b_roi_logits.append(self.roi_classifier(h_roi_pool)) # (1, C)
+                        h_roi_pool = torch.bmm(a_roi, h_roi).squeeze(1) # (1, D)
+                        
+                        b_roi_logits.append(self.roi_classifier(h_roi_pool)) # (1, C_ann)
+                        b_roi_pools.append(h_roi_pool) # (1, D)
                         
                         # Create boolean mask for this ROI
                         mask = torch.zeros(N, dtype=torch.bool, device=h.device)
                         mask[ids] = True
                         b_roi_masks.append(mask)
                 
-                # Stack ROI logits and masks for this batch item -> (Q, C) and (Q, N)
-                if b_roi_logits:
-                    roi_logits_list.append(torch.cat(b_roi_logits, dim=0))
-                    roi_masks_list.append(torch.stack(b_roi_masks, dim=0))
+                # Aggregate all ROIs in this slide to form a single global ROI assistance token
+                if b_roi_pools:
+                    # Mean pooling the rich ROI features -> (1, D)
+                    h_roi_global = torch.mean(torch.cat(b_roi_pools, dim=0), dim=0, keepdim=True)
                 else:
-                    roi_logits_list.append(None)
-                    roi_masks_list.append(None)
+                    # Fallback if no ROIs in this specific slide -> zero vector (1, D)
+                    h_roi_global = torch.zeros(1, D, device=h.device)
+                    
+                roi_global_list.append(h_roi_global)
+                
+                # Stack ROI logits and masks for this batch item
+                if b_roi_logits:
+                    roi_logits_list.append(torch.cat(b_roi_logits, dim=0))   # (Q, C_ann)
+                    roi_masks_list.append(torch.stack(b_roi_masks, dim=0))   # (Q, N)
             
-            # Store in output using the obj_classes format convention
+            # Step 3: Late Fusion & Global Slide-level Classification
+            # Stack the global ROI assistance tokens -> (B, D)
+            h_roi_global_batch = torch.cat(roi_global_list, dim=0)
+            
+            # Concatenate Main Stream with Assistance Stream -> (B, 2D)
+            h_fused = torch.cat([h_slide_pool, h_roi_global_batch], dim=-1)
+            
+            # Compress and Classify
+            h_final = self.global_fusion(h_fused) # (B, D)
+            slide_logits = self.slide_classifier(h_final) # (B, C_lbl)
+                
+            # Store Outputs
             self.output["obj_classes"] = roi_logits_list
             self.output["obj_masks"] = roi_masks_list
+            self.output["lbl_logits"] = slide_logits
+            self.output["attention"] = a_slide
+
             
         return self.output
 
@@ -172,13 +216,13 @@ class ROIMIL(nn.Module):
                     for i in range(roi_probs.shape[0]):
                         # Format as expected by API contract
                         roi_dict = {
-                            "class": int(np.argmax(roi_probs[i])), 
-                            "scores": roi_probs[i],
-                            "mask": b_masks[i]
+                            "ids": np.where(b_masks[i])[0].tolist(), 
+                            "labels": roi_probs[i],
+                            "scores": float(roi_probs[i].max())
                         }
                         b_preds.append(roi_dict)
                 pred_obj.append(b_preds)
-            self.result['pred_obj'] = pred_obj
+            self.result['pred_obj'] = pred_obj if len(pred_obj) > 0 else None
 
         return self.result
 
@@ -201,7 +245,7 @@ class ROIMIL(nn.Module):
                 if objects[b] and b < len(pred_obj) and pred_obj[b]:
                     for i, roi in enumerate(objects[b]):
                         if i < len(pred_obj[b]):
-                            all_pred.append(pred_obj[b][i]['scores'])
+                            all_pred.append(pred_obj[b][i]['labels'])
                             all_true.append(roi['label'])
             
             if all_pred and all_true:
