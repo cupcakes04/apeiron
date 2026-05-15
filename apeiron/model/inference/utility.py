@@ -2,9 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import scipy.stats
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, precision_recall_curve, average_precision_score, r2_score, mean_squared_error, mean_absolute_error
 from typing import Literal, List
 from ..downstream import *
 from dataclasses import dataclass, field
+from apeiron.utils import save_and_show_plot
 
 
 MODALITIES = ['label', 'annotation' , 'objects', 'text']
@@ -228,3 +232,205 @@ def choose_inferencer(
         )
 
     return inferencer
+
+
+def plot_analysis(y_true, y_pred, mode, title_prefix="", save_base=None, show=True):
+    res = {}
+    is_soft = np.any((y_true > 0) & (y_true < 1))
+    
+    # 1. Sanity Check Hard Confusion Matrix for all non-regression modes
+    if mode != 'regression':
+        # Usually true is one-hot (B, C) or indices (B,)
+        y_true_cls = np.argmax(y_true, axis=1) if y_true.ndim > 1 and y_true.shape[1] > 1 else y_true.flatten()
+        y_pred_cls = np.argmax(y_pred, axis=1) if y_pred.ndim > 1 and y_pred.shape[1] > 1 else y_pred.flatten()
+        
+        # Confusion Matrix
+        cm = confusion_matrix(y_true_cls, y_pred_cls)
+        res['confusion_matrix'] = cm
+        
+        # Normalize for coloring correctly by percentages
+        cm_norm = confusion_matrix(y_true_cls, y_pred_cls, normalize='true')
+        total_count = np.sum(cm)
+        
+        fig, ax = plt.subplots(figsize=(6, 5))
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm_norm)
+        disp.plot(ax=ax, cmap='Blues', colorbar=True)
+        
+        # Overwrite text to show Row Percentage \n Global Percentage
+        for i in range(cm.shape[0]):
+            for j in range(cm.shape[1]):
+                count = cm[i, j]
+                pct = cm_norm[i, j]
+                pct_str = f"{pct:.1%}" if not np.isnan(pct) else "0.0%"
+                global_pct = (count / total_count) * 100 if total_count > 0 else 0
+                disp.text_[i, j].set_text(f"{pct_str}\n({global_pct:.2f}%)")
+                
+        title_text = f"{title_prefix} Hard Confusion Matrix\nTotal = {total_count}"
+        ax.set_title(title_text)
+        
+        cfm_path = f"{save_base}_hard_cfm.png" if save_base else None
+        save_and_show_plot(fig, cfm_path, show)
+        
+    # 2. Mode-specific graphs
+    if mode == 'softmax':
+        if is_soft:
+            # Soft Confusion Matrix (fractional mass distribution)
+            cm = y_true.T @ y_pred
+            res['soft_confusion_matrix'] = cm
+            
+            row_sums = cm.sum(axis=1, keepdims=True)
+            cm_norm = np.divide(cm, row_sums, out=np.zeros_like(cm), where=row_sums!=0)
+            total_count = np.sum(cm)
+            
+            fig, ax = plt.subplots(figsize=(6, 5))
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm_norm)
+            disp.plot(ax=ax, cmap='Blues', colorbar=True)
+            
+            for i in range(cm.shape[0]):
+                for j in range(cm.shape[1]):
+                    count = cm[i, j]
+                    pct = cm_norm[i, j]
+                    pct_str = f"{pct:.1%}" if not np.isnan(pct) else "0.0%"
+                    disp.text_[i, j].set_text(f"{pct_str}\n({count:.1f})")
+                    
+            title_text = f"{title_prefix} Soft Confusion Matrix\nTotal Mass = {total_count:.1f}"
+            ax.set_title(title_text)
+            
+            cfm_path = f"{save_base}_soft_cfm.png" if save_base else None
+            save_and_show_plot(fig, cfm_path, show)
+            
+            # Plot calibration scatter for soft labels in softmax
+            num_classes = y_true.shape[1] if y_true.ndim > 1 else 1
+            if num_classes > 1:
+                fig, axes = plt.subplots(1, num_classes, figsize=(4 * num_classes, 4))
+                if num_classes == 1: axes = [axes]
+                for c in range(num_classes):
+                    ax = axes[c]
+                    hb = ax.hexbin(y_true[:, c], y_pred[:, c], gridsize=40, cmap='viridis', bins='log', mincnt=1)
+                    fig.colorbar(hb, ax=ax, label='log10(N)')
+                    ax.plot([0, 1], [0, 1], 'r--', lw=2)
+                    ax.set_xlabel('True Prob')
+                    ax.set_ylabel('Pred Prob')
+                    ax.set_title(f"Class {c}")
+                    ax.grid(True, linestyle=':', alpha=0.6)
+                fig.suptitle(f"{title_prefix} Softmax Calibration", y=1.05)
+                scatter_path = f"{save_base}_scatter.png" if save_base else None
+                save_and_show_plot(fig, scatter_path, show)
+
+    elif mode == 'sigmoid':
+        # y_true (B, C) binary, y_pred (B, C) probabilities
+        num_classes = y_true.shape[1] if y_true.ndim > 1 else 1
+        if num_classes == 1:
+            y_true = y_true.reshape(-1, 1)
+            y_pred = y_pred.reshape(-1, 1)
+            
+        # If not strictly soft, we can still compute PR curves
+        if not is_soft:
+            res['ap_scores'] = []
+            fig, ax = plt.subplots(figsize=(8, 6))
+            for c in range(num_classes):
+                precision, recall, _ = precision_recall_curve(y_true[:, c], y_pred[:, c])
+                ap = average_precision_score(y_true[:, c], y_pred[:, c])
+                res['ap_scores'].append(ap)
+                ax.plot(recall, precision, label=f'Class {c} (AP={ap:.2f})')
+                
+            ax.set_xlabel('Recall')
+            ax.set_ylabel('Precision')
+            ax.set_title(f"{title_prefix} Precision-Recall Curve")
+            ax.legend(loc='best', fontsize='small')
+            ax.grid(True, linestyle=':', alpha=0.6)
+            pr_path = f"{save_base}_pr.png" if save_base else None
+            save_and_show_plot(fig, pr_path, show)
+        
+        # Plot calibration scatter for sigmoid
+        fig, axes = plt.subplots(1, num_classes, figsize=(4 * num_classes, 4))
+        if num_classes == 1: axes = [axes]
+        for c in range(num_classes):
+            ax = axes[c]
+            hb = ax.hexbin(y_true[:, c], y_pred[:, c], gridsize=40, cmap='viridis', bins='log', mincnt=1)
+            fig.colorbar(hb, ax=ax, label='log10(N)')
+            ax.plot([0, 1], [0, 1], 'r--', lw=2)
+            ax.set_xlabel('True Prob')
+            ax.set_ylabel('Pred Prob')
+            ax.set_title(f"Class {c}")
+            ax.grid(True, linestyle=':', alpha=0.6)
+        fig.suptitle(f"{title_prefix} Sigmoid Calibration", y=1.05)
+        scatter_path = f"{save_base}_scatter.png" if save_base else None
+        save_and_show_plot(fig, scatter_path, show)
+        
+    elif mode == 'regression':
+        # y_true (B, C), y_pred (B, C)
+        mse = mean_squared_error(y_true, y_pred)
+        mae = mean_absolute_error(y_true, y_pred)
+        r2 = r2_score(y_true, y_pred)
+        res['mse'] = mse
+        res['mae'] = mae
+        res['r2'] = r2
+        if show: print(f"MSE: {mse:.4f} | MAE: {mae:.4f} | R2: {r2:.4f}")
+        
+        fig, ax = plt.subplots(figsize=(7, 5))
+        hb = ax.hexbin(y_true.flatten(), y_pred.flatten(), gridsize=50, cmap='viridis', bins='log', mincnt=1)
+        fig.colorbar(hb, ax=ax, label='log10(N)')
+        ax.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'r--', lw=2)
+        ax.set_xlabel('True Values')
+        ax.set_ylabel('Predictions')
+        ax.set_title(f"{title_prefix} Regression Scatter")
+        ax.grid(True, linestyle=':', alpha=0.6)
+        scatter_path = f"{save_base}_scatter.png" if save_base else None
+        save_and_show_plot(fig, scatter_path, show)
+        
+    elif mode == 'rank':
+        # y_true (B, C), y_pred (B, C)
+        num_classes = y_true.shape[1] if y_true.ndim > 1 else 1
+        if num_classes == 1:
+            y_true = y_true.reshape(-1, 1)
+            y_pred = y_pred.reshape(-1, 1)
+
+        res['spearman'] = []
+        
+        # Rank Correlation Scatter
+        fig, axes = plt.subplots(1, num_classes, figsize=(5 * num_classes, 4))
+        if num_classes == 1: axes = [axes]
+        
+        for c in range(num_classes):
+            ax = axes[c]
+            true_ranks = scipy.stats.rankdata(y_true[:, c])
+            pred_ranks = scipy.stats.rankdata(y_pred[:, c])
+            rho, _ = scipy.stats.spearmanr(y_true[:, c], y_pred[:, c])
+            res['spearman'].append(rho)
+            
+            hb = ax.hexbin(true_ranks, pred_ranks, gridsize=40, cmap='viridis', bins='log', mincnt=1)
+            fig.colorbar(hb, ax=ax, label='log10(N)')
+            ax.plot([0, len(true_ranks)], [0, len(true_ranks)], 'r--', lw=2)
+            ax.set_xlabel('True Rank')
+            ax.set_ylabel('Predicted Rank')
+            ax.set_title(f"Class {c} (rho={rho:.3f})")
+            ax.grid(True, linestyle=':', alpha=0.6)
+            
+        fig.suptitle(f"{title_prefix} Rank Correlation", y=1.05)
+        rank_path = f"{save_base}_rank.png" if save_base else None
+        save_and_show_plot(fig, rank_path, show)
+        
+        # True-Sorted Monotonicity Plot
+        fig, axes = plt.subplots(1, num_classes, figsize=(5 * num_classes, 4))
+        if num_classes == 1: axes = [axes]
+        
+        for c in range(num_classes):
+            ax = axes[c]
+            sort_idx = np.argsort(y_true[:, c])
+            
+            # Because Monotonicity plots can also be very dense:
+            x_idx = np.arange(len(sort_idx))
+            hb = ax.hexbin(x_idx, y_pred[sort_idx, c], gridsize=40, cmap='viridis', bins='log', mincnt=1)
+            fig.colorbar(hb, ax=ax, label='log10(N)')
+            
+            ax.set_xlabel('Instances sorted by True Label')
+            ax.set_ylabel('Predicted Score')
+            ax.set_title(f"Class {c} Monotonicity")
+            ax.grid(True, linestyle=':', alpha=0.6)
+            
+        fig.suptitle(f"{title_prefix} Monotonicity", y=1.05)
+        mono_path = f"{save_base}_mono.png" if save_base else None
+        save_and_show_plot(fig, mono_path, show)
+        
+    return res

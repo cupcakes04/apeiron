@@ -7,8 +7,19 @@ import re
 import pandas as pd
 from typing import Dict, Any
 from typing import List, Literal, Union
+import matplotlib.pyplot as plt
 import tifffile
 import torch
+
+def save_and_show_plot(fig, save_path=None, show=True):
+    fig.tight_layout()
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, bbox_inches='tight')
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
 def convert_to_list(x):
     """Wrap a scalar value in a list; pass through lists/tuples and None unchanged.

@@ -218,6 +218,79 @@ class MultiLabelFocalLoss(nn.Module):
 
 
 # ============================================================================
+# (1.5) Ranking losses
+# ============================================================================
+
+class PairwiseMarginLoss(nn.Module):
+    """Pairwise margin ranking loss for soft float labels.
+    
+    Ranks the CLASSES within each sample.
+    Penalizes when the predicted score for a higher true-label class 
+    is not greater than a lower true-label class by at least `margin`.
+    
+    `Best for equally important ranks across classes`
+    Args:
+        margin (float): The required margin between predictions. Default 0.1.
+        cls_weights (dict | None): ``{class_id: weight}`` per-class weights.
+    """
+    def __init__(self, margin: float = 0.1, cls_weights: dict = None):
+        super().__init__()
+        self.margin = margin
+        w = weights_tensor(cls_weights)
+        self.register_buffer('weight', w)
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        # logits: (B, C), labels: (B, C)
+        # We want to rank classes against each other for each item in the batch
+        
+        # diff_true[b, i, j] = labels[b, i] - labels[b, j]
+        diff_true = labels.unsqueeze(2) - labels.unsqueeze(1)  # (B, C, C)
+        diff_pred = logits.unsqueeze(2) - logits.unsqueeze(1)  # (B, C, C)
+        
+        mask = diff_true > 0  # Only pairs where true class i > true class j
+        
+        if mask.sum() > 0:
+            pair_loss = F.relu(self.margin - diff_pred) # (B, C, C)
+            
+            if self.weight is not None:
+                # Apply weight of the "higher" class (i) to the loss
+                w = self.weight.unsqueeze(0).unsqueeze(2) # (1, C, 1)
+                pair_loss = pair_loss * w
+                
+            loss = (pair_loss * mask).sum() / mask.sum()
+        else:
+            loss = torch.tensor(0.0, device=logits.device, requires_grad=True)
+            
+        return loss
+
+class ListNetLoss(nn.Module):
+    """ListNet loss for ranking soft float labels.
+    
+    Applies softmax over the CLASS dimension to treat the classes as a list 
+    to be ranked, then computes cross-entropy against the softmax of true labels.
+
+    `Best for securing top rank only`
+    Args:
+        cls_weights (dict | None): ``{class_id: weight}`` per-class weights.
+    """
+    def __init__(self, cls_weights: dict = None):
+        super().__init__()
+        w = weights_tensor(cls_weights)
+        self.register_buffer('weight', w)
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        # Rank classes within each sample
+        pred_probs = F.softmax(logits, dim=-1) # (B, C)
+        true_probs = F.softmax(labels, dim=-1) # (B, C)
+        
+        loss = -(true_probs * torch.log(pred_probs + 1e-7)) # (B, C)
+        
+        if self.weight is not None:
+            loss = loss * self.weight
+            
+        return loss.sum(dim=-1).mean()
+
+# ============================================================================
 # (2) Structural losses — segmentation
 # ============================================================================
 
@@ -264,6 +337,8 @@ _LABEL_LOSS_REGISTRY = {
     'mae':         MAELoss,
     'bce':         BCEWithLogitsLoss,
     'multi_fc':    MultiLabelFocalLoss,
+    'margin':      PairwiseMarginLoss,
+    'listnet':     ListNetLoss,
     'dice':        DiceLoss,
 }
 

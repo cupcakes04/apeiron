@@ -1,16 +1,17 @@
 from ..downstream import *
 from .composite import *
-from .utility import ModelData
+from .utility import ModelData, plot_analysis
 from .optimizer import Optimizer
 import torch
 from typing import Literal, List
 import numpy as np
 from pathlib import Path
-from apeiron.utils import get_device, extend_dict
+from apeiron.utils import get_device, extend_dict, save_and_show_plot
 from tqdm import tqdm
 from apeiron.utils import to_cpu
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, precision_recall_curve, average_precision_score, r2_score, mean_squared_error, mean_absolute_error
+import scipy.stats
 
 class Inferencer:
     def __init__(self, device: str = None, **kwargs):
@@ -59,14 +60,20 @@ class Inferencer:
             chkp_path (str): Path to a checkpoint to load model weights from.
         """
 
-        # 1. Prepare multimodal heads
+        # Prepare multimodal heads
         self.inferencer = MultiHeadModel(
             in_features, mode=mode, inf_models=inf_models,
             lbl_n_classes=lbl_n_classes, lbl_loss_type=lbl_loss_type, lbl_cls_weights=lbl_cls_weights,
             ann_n_classes=ann_n_classes, ann_loss_type=ann_loss_type, ann_cls_weights=ann_cls_weights,
         ).to(self.device)
+        
+        # Determine mode from the first head that handles labels
+        self.lbl_mode = self.ann_mode = 'softmax'   # Default fallback
+        for head_mod in self.inferencer.heads.values():
+            if hasattr(head_mod, 'lbl_mode'): self.lbl_mode = head_mod.lbl_mode
+            if hasattr(head_mod, 'ann_mode'): self.ann_mode = head_mod.ann_mode
 
-        # 3. Prepare Optimizers
+        # Prepare Optimizers
         self.optim_cfgs = {'lr': lr, 'optimizer': optimizer, 'weight_decay': weight_decay, 'scheduler': scheduler}
         self.optimizer_state_dict = None
 
@@ -118,6 +125,7 @@ class Inferencer:
         """Forward pass + prediction (single sample, no grad)."""
 
         self.prep_data(data, mode='torch')
+        self.inferencer.eval()
         mdata = self.inferencer(**data)
         self.inferencer.predict(mdata)
         if run_metric: self.inferencer.metric(mdata, threshold=threshold, **data)
@@ -200,6 +208,7 @@ class Inferencer:
 
         self.epoch_losses = {}
         self.epoch_metrics = {}
+        self.epoch_xy = {'true_ann': [], 'true_lbl': [], 'pred_ann': [], 'pred_lbl': []}
 
         n_samples = 0
         for data in tqdm(data_collector):
@@ -246,8 +255,8 @@ class Inferencer:
             for key, loss in res.items():
                 epoch_dict[name][key] = loss / n_samples
 
-    @torch.no_grad()
-    def val_graphs(self):
+
+    def val_graphs(self, save_dir=None, epoch=None, show=True):
         """Compute confusion matrix, PR curves, etc. over validation data.
         
         Uses cached valid_history if evaluation has already been run.
@@ -268,16 +277,10 @@ class Inferencer:
         if all_true['label'] and all_pred['label']:
             y_true = np.concatenate(all_true['label'], axis=0) # (B, C) or (B,)
             y_pred = np.concatenate(all_pred['label'], axis=0) # (B, C) or (B,)
-            
-            # Determine mode from the first head that handles labels
-            mode = 'softmax' # Default fallback
-            for head_mod in self.inferencer.heads.values():
-                if hasattr(head_mod, 'lbl_mode'):
-                    mode = head_mod.lbl_mode
-                    break
                     
-            print(f"\n--- Label Analysis ({mode}) ---")
-            analysis_results['label'] = self._plot_analysis(y_true, y_pred, mode, title_prefix="Label")
+            if show: print(f"\n--- Label Analysis ({self.lbl_mode}) ---")
+            save_base = Path(save_dir) / f'label/epoch_{epoch}' if save_dir and epoch is not None else None
+            analysis_results['label'] = plot_analysis(y_true, y_pred, self.lbl_mode, title_prefix="Label", save_base=save_base, show=show)
 
         # 3. Analyze Annotation Modality
         if all_true['annotation'] and all_pred['annotation']:
@@ -285,97 +288,12 @@ class Inferencer:
             # (B,N,C) -> (B*N,C)
             y_true = np.concatenate([y.reshape(-1, y.shape[-1]) for y in all_true['annotation']], axis=0)
             y_pred = np.concatenate([y.reshape(-1, y.shape[-1]) for y in all_pred['annotation']], axis=0)
-            
-            mode = 'softmax' # Default fallback
-            for head_mod in self.inferencer.heads.values():
-                if hasattr(head_mod, 'ann_mode'):
-                    mode = head_mod.ann_mode
-                    break
                     
-            print(f"\n--- Annotation Analysis ({mode}) ---")
-            analysis_results['annotation'] = self._plot_analysis(y_true, y_pred, mode, title_prefix="Annotation")
+            if show: print(f"\n--- Annotation Analysis ({self.ann_mode}) ---")
+            save_base = Path(save_dir) / f'annotation/epoch_{epoch}' if save_dir and epoch is not None else None
+            analysis_results['annotation'] = plot_analysis(y_true, y_pred, self.ann_mode, title_prefix="Annotation", save_base=save_base, show=show)
 
         return analysis_results
-
-    def _plot_analysis(self, y_true, y_pred, mode, title_prefix=""):
-        res = {}
-        
-        # Handle formats based on pred.py modes
-        if mode == 'softmax':
-            # Usually true is one-hot (B, C) or indices (B,)
-            y_true_cls = np.argmax(y_true, axis=1) if y_true.ndim > 1 and y_true.shape[1] > 1 else y_true.flatten()
-            y_pred_cls = np.argmax(y_pred, axis=1) if y_pred.ndim > 1 and y_pred.shape[1] > 1 else y_pred.flatten()
-            
-            # Confusion Matrix
-            cm = confusion_matrix(y_true_cls, y_pred_cls)
-            res['confusion_matrix'] = cm
-            
-            # Normalize for coloring correctly by percentages
-            cm_norm = confusion_matrix(y_true_cls, y_pred_cls, normalize='true')
-            total_count = np.sum(cm)
-            
-            fig, ax = plt.subplots(figsize=(6, 5))
-            disp = ConfusionMatrixDisplay(confusion_matrix=cm_norm)
-            disp.plot(ax=ax, cmap='Blues', colorbar=True)
-            
-            # Overwrite text to show Row Percentage \n (Global Percentage)
-            for i in range(cm.shape[0]):
-                for j in range(cm.shape[1]):
-                    count = cm[i, j]
-                    pct = cm_norm[i, j]
-                    pct_str = f"{pct:.1%}" if not np.isnan(pct) else "0.0%"
-                    global_pct = (count / total_count) * 100 if total_count > 0 else 0
-                    disp.text_[i, j].set_text(f"{pct_str}\n({global_pct:.2f}%)")
-                    
-            ax.set_title(f"{title_prefix} Confusion Matrix\nTotal = {total_count}")
-            plt.tight_layout()
-            plt.show()
-
-        elif mode == 'sigmoid':
-            # y_true (B, C) binary, y_pred (B, C) probabilities
-            num_classes = y_true.shape[1] if y_true.ndim > 1 else 1
-            if num_classes == 1:
-                y_true = y_true.reshape(-1, 1)
-                y_pred = y_pred.reshape(-1, 1)
-                
-            res['ap_scores'] = []
-            
-            fig, ax = plt.subplots(figsize=(8, 6))
-            for c in range(num_classes):
-                precision, recall, _ = precision_recall_curve(y_true[:, c], y_pred[:, c])
-                ap = average_precision_score(y_true[:, c], y_pred[:, c])
-                res['ap_scores'].append(ap)
-                ax.plot(recall, precision, label=f'Class {c} (AP={ap:.2f})')
-                
-            ax.set_xlabel('Recall')
-            ax.set_ylabel('Precision')
-            ax.set_title(f"{title_prefix} Precision-Recall Curve")
-            ax.legend(loc='best', fontsize='small')
-            ax.grid(True, linestyle=':', alpha=0.6)
-            plt.tight_layout()
-            plt.show()
-            
-        elif mode == 'regression':
-            # y_true (B, C), y_pred (B, C)
-            mse = mean_squared_error(y_true, y_pred)
-            mae = mean_absolute_error(y_true, y_pred)
-            r2 = r2_score(y_true, y_pred)
-            res['mse'] = mse
-            res['mae'] = mae
-            res['r2'] = r2
-            print(f"MSE: {mse:.4f} | MAE: {mae:.4f} | R2: {r2:.4f}")
-            
-            fig, ax = plt.subplots(figsize=(6, 5))
-            ax.scatter(y_true.flatten(), y_pred.flatten(), alpha=0.5)
-            ax.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'r--', lw=2)
-            ax.set_xlabel('True Values')
-            ax.set_ylabel('Predictions')
-            ax.set_title(f"{title_prefix} Regression Scatter")
-            ax.grid(True, linestyle=':', alpha=0.6)
-            plt.tight_layout()
-            plt.show()
-            
-        return res
 
     # |-----------------------------------------------|
     # |---------------- Save & Load ------------------|

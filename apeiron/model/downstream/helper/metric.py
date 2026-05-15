@@ -35,6 +35,8 @@ import collections
 from typing import Literal
 
 from apeiron.utils import to_cpu
+from difflib import SequenceMatcher
+import scipy.stats
 
 
 # ============================================================================
@@ -50,6 +52,8 @@ METRIC_MODES = {
     'mae':      'regression',
     'bce':      'multilabel',
     'multi_fc': 'multilabel',
+    'margin':   'ranking',
+    'listnet':  'ranking',
 }
 
 def get_metric_mode(loss_type):
@@ -77,6 +81,8 @@ class LabelMetrics:
             return self.exclusive(pred, target)
         elif self.mode == 'regression':
             return self.regression(pred, target)
+        elif self.mode == 'ranking':
+            return self.ranking(pred, target)
     
     @staticmethod
     def _per_class_f1(pred_bin: torch.Tensor, tgt_bin: torch.Tensor) -> dict:
@@ -192,6 +198,35 @@ class LabelMetrics:
         per_mse = {f'mse_c{c}': (diff[:, c] ** 2).mean().item() for c in range(pred.size(-1))}
 
         return {'mae': mae, 'mse': mse, **per_mae, **per_mse}
+
+    @torch.no_grad()
+    def ranking(self, pred: torch.Tensor, label: torch.Tensor) -> dict:
+        """Metrics for ranking predictions.
+
+        Suitable for ``margin``, ``listnet`` losses.
+
+        Input:
+            pred   (torch.Tensor): ``(B, C)`` predicted scores (logits).
+            label (torch.Tensor): ``(B, C)`` ground-truth scores.
+
+        Output:
+            dict:
+                - ``spearman_macro`` — averaged Spearman rank correlation across samples.
+        """
+        label = to_cpu(label).numpy()
+        pred = to_cpu(pred).numpy()
+        
+        B = pred.shape[0]
+        
+        batch_rhos = []
+        for b in range(B):
+            # Rank classes within the sample
+            rho, _ = scipy.stats.spearmanr(label[b, :], pred[b, :])
+            batch_rhos.append(float(rho) if not np.isnan(rho) else 0.0)
+            
+        spearman_macro = float(np.mean(batch_rhos)) if B > 0 else 0.0
+        
+        return {'spearman_macro': spearman_macro}
 
 
 class AnnotationMetrics:
@@ -552,7 +587,6 @@ class TextMetrics:
                 char_accs.append(1.0)
             else:
                 # Basic character overlap (SequenceMatcher could be used for better accuracy)
-                from difflib import SequenceMatcher
                 ratio = SequenceMatcher(None, p, t).ratio()
                 char_accs.append(ratio)
 

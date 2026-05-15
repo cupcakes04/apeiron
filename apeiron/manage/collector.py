@@ -3,10 +3,11 @@ from matplotlib import pyplot as plt
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import re
 from .manager import Manager
 from .searcher import Searcher
 from typing import Literal, List
-from apeiron.utils import convert_to_list, deep_assign, deep_get
+from apeiron.utils import convert_to_list, deep_assign, deep_get, save_and_show_plot
 import random
 from sklearn.model_selection import train_test_split
 from apeiron.utils import np_unsqueeze, extend_dict
@@ -354,18 +355,13 @@ class Collector(Manager, Searcher):
             self.train_history[epoch] = self.analyzer.train_epoch(train_collector)
 
             # --- Validate ---
-            has_val = self.valid_ids is not None
-            if has_val:
-                valid_collector = self.data_collector(collect_ids=self.valid_ids, shuffle=False, batch_size=batch_size, cache=True)
-                self.valid_history[epoch] = self.analyzer.eval_epoch(valid_collector)
-                self.analyzer.optimizer.step_scheduler(metric=get_loss(self.valid_history, epoch=epoch))
-            else:
-                self.analyzer.optimizer.step_scheduler()
+            valid_collector = self.data_collector(collect_ids=self.valid_ids, shuffle=False, batch_size=batch_size, cache=True)
+            self.valid_history[epoch] = self.analyzer.eval_epoch(valid_collector)
+            self.analyzer.optimizer.step_scheduler(metric=get_loss(self.valid_history, epoch=epoch))
 
             if verbose:
                 msg = f"Epoch {epoch}/{n_epochs} | train loss: {get_loss(self.train_history, epoch=epoch):.4f}"
-                if has_val:
-                    msg += f" | valid loss: {get_loss(self.valid_history, epoch=epoch):.4f}"
+                msg += f" | valid loss: {get_loss(self.valid_history, epoch=epoch):.4f}"
                 msg += f" | lr: {self.analyzer.optimizer.lr:.2e}"
                 print(msg)
                 
@@ -374,6 +370,11 @@ class Collector(Manager, Searcher):
             deep_assign(self.manifest, [self.mnf_id, 'train_history', epoch], value=self.train_history[epoch])
             deep_assign(self.manifest, [self.mnf_id, 'valid_history', epoch], value=self.valid_history[epoch])
             save_json(self.inferencer_folder / 'manifest.json', self.manifest)
+            
+            # Save graphs
+            graphs_dir = self.inferencer_folder / f'{self.mnf_id}/graphs'
+            self.plot_history(save_path=graphs_dir / 'plot_history.png', show=False)
+            self.analyzer.val_graphs(save_dir=graphs_dir, epoch=epoch, show=False)
 
 
     def evaluate(self, batch_size=1, eval_ids: Literal['valid', 'train', 'all'] = 'valid'):
@@ -400,7 +401,7 @@ class Collector(Manager, Searcher):
         return self.analyzer.eval_epoch(eval_collector)
 
 
-    def plot_history(self, figsize=(15, 5)):
+    def plot_history(self, save_path=None, show=True):
         """Plot the training and validation history across epochs.
         
         Plots main modality losses, composite loss, and overall accuracy metrics.
@@ -447,7 +448,6 @@ class Collector(Manager, Searcher):
                         plots_data[base_name][split][1].append(val)
                         
                 # Extract Metrics (Include all aggregate scalars, exclude per-class for clarity)
-                import re
                 for modality, res in epoch_data.get('metric', {}).items():
                     for metric_name, val in res.items():
                         if isinstance(val, (int, float)):
@@ -488,8 +488,7 @@ class Collector(Manager, Searcher):
         for i in range(total_plots, len(axes)):
             axes[i].set_visible(False)
             
-        plt.tight_layout()
-        plt.show()
+        save_and_show_plot(fig, save_path, show)
 
 
     # |-----------------------------------------------|

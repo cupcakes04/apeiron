@@ -15,7 +15,7 @@ def is_manifest_match(target_manifest, current_manifest, can_train=True):
 
     # 2. Match annotation and label configs
     if can_train:
-        keys = ['lbl_class_id_map', 'lbl_loss_type', 'ann_class_id_map', 'ann_loss_type']  
+        keys = ['lbl_class_id_map', 'lbl_loss_type', 'lbl_cls_weights', 'ann_class_id_map', 'ann_loss_type', 'ann_cls_weights']  
     else:
         keys = ['lbl_class_id_map', 'ann_class_id_map']
     if is_dicts_diff(target_manifest, current_manifest, keys=keys):

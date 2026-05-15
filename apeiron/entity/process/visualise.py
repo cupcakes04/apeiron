@@ -158,10 +158,20 @@ class Visualiser:
                     # Single integer class
                     heat = ann[:, heatmap_target]
                 
+                # Ensure heat is in [0, 1] range for the colormap. 
+                # If raw logits are used (e.g. rank mode), we min-max normalize them.
+                if heat.min() < 0 or heat.max() > 1:
+                    heat = normalise(heat, mode='minmax').flatten()
+
                 colors = feats_score_to_coolwarm(heat)
                 self.draw_colors = np.expand_dims(colors, axis=0) # (1, N, 3)
                 self.color_map = None
             else:
+                # For discrete RGB painting, we also need to guard against raw logits
+                # If any value is outside [0, 1], we min-max normalize the entire annotation matrix
+                if ann.min() < 0 or ann.max() > 1:
+                    ann = normalise(ann, mode='minmax')
+                    
                 colors, self.color_map = ann_percentages_to_rgb(ann)
                 self.draw_colors = np.expand_dims(colors, axis=0) # (1, N, 3)
             

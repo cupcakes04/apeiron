@@ -11,12 +11,14 @@ PRED_TYPES = {
     'mae': 'regression',
     'bce': 'sigmoid',
     'multi_fc': 'sigmoid',
+    'margin': 'rank',
+    'listnet': 'rank',
 }
 
 def check_mode(loss_type):
     mode = PRED_TYPES[loss_type]
-    if mode not in ('softmax', 'sigmoid', 'regression'):
-        raise ValueError(f"mode must be 'regression', 'softmax' or 'sigmoid', got '{mode}'")
+    if mode not in ('softmax', 'sigmoid', 'regression', 'rank'):
+        raise ValueError(f"mode must be 'regression', 'softmax', 'sigmoid', or 'rank', got '{mode}'")
     return mode
 
 def apply_pred(mode, logits):
@@ -26,4 +28,6 @@ def apply_pred(mode, logits):
         return logits.sigmoid()            # (B, C)
     elif mode == 'regression':
         return logits
+    elif mode == 'rank':
+        return logits # Scores for ranking can just be the raw logits
     

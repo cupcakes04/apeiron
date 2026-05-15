@@ -74,7 +74,7 @@ When interacting with `Processor` or `Annotator`, you can specify several argume
     *   `'shape'`: Reads from GeoJSON polygons (e.g. QuPath exports). Calculates intersection coverage of tiles vs polygons.
     *   `'pixel'`: Reads from a single-channel TIFF mask. Extracts pixel values to generate class fractions.
 *   **`supervision` (bool)**: If `True`, changes the model from a Slide-level MIL into an ROI-level model. Instead of yielding one massive bag of `(N, F)` features per slide, it extracts specific annotated regions and groups them into `objects` dictionaries, setting `batch_size = 1` for heterogeneous ROI bagging.
-*   **`background_ratio` (float)**: e.g., `0.20`. Used during tile-level extraction. It keeps all foreground tiles (where annotation > 0) and randomly subsamples background tiles so that the background makes up exactly `background_ratio` (20%) of the final generated dataset.
+*   **`background_ratio` (float)**: e.g., `0.20`. Used during tile-level extraction (only in window_level=grid, grouped coords). It keeps all foreground tiles (where annotation > 0) and randomly subsamples background tiles so that the background makes up exactly `background_ratio` (20%) of the final generated dataset.
 
 ### Expected Raw Annotation Formats
 When bringing your own annotations to Apeiron, they must strictly follow these structural requirements based on the `ann_type` used:
