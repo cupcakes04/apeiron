@@ -10,7 +10,7 @@ import numpy as np
 from typing import Literal, List
 from tqdm import tqdm
 from PIL import Image
-from apeiron.utils import search_dir, convert_to_list, match_file
+from apeiron.utils import convert_to_list, match_file
 
 class Manager(Registry, ArtifactIO):
     """Manages slide/tile analysis workflows, data generation, and artifact storage.
@@ -400,7 +400,7 @@ class Manager(Registry, ArtifactIO):
     # |-----------------------------------------------|
 
 
-    def assign_analyzer(self, slide_id, data_modes: List[str]):
+    def assign_analyzer(self, slide_id, data_modes: List[str], **kwargs):
         """Load generated data artifacts into the analyzer instance.
         
         Retrieves previously generated data from disk and assigns to analyzer
@@ -447,10 +447,11 @@ class Manager(Registry, ArtifactIO):
             self.analyzer.prepare_annotations(ann_path, ann_type)
             
         if any(k in data_modes for k in ['prediction', 'pred', 'all']):
-            self.analyzer.predict(mode='slide')
+            pred_kwargs = {k: kwargs.get(k, None) for k in ['ann_path', 'ann_type', 'ground_truth']}
+            self.analyzer.predict(mode='slide', **pred_kwargs)
             
             
-    def serve_slide_analyzer(self, slide_id, data_modes: List[str] = 'req'):
+    def serve_slide_analyzer(self, slide_id, data_modes: List[str] = 'req', **kwargs):
         """Serve a pre-configured analyzer instance with loaded data for a specific slide.
         
         Opens the slide and loads previously generated data (thumbnails, embeddings, features)
@@ -475,10 +476,10 @@ class Manager(Registry, ArtifactIO):
             self.analyzer.open_slide(self.slide_data_paths[slide_id]['slide_path'])
             self.cur_data = slide_id
         if data_modes:
-            self.assign_analyzer(slide_id, data_modes)
+            self.assign_analyzer(slide_id, data_modes, **kwargs)
         return self.analyzer
         
-    def serve_tile_analyzer(self, tile_class):
+    def serve_tile_analyzer(self, tile_class, **kwargs):
         """Serve a pre-configured analyzer for a tile class.
 
         Opens the tile paths and loads cached embeddings into the analyzer.

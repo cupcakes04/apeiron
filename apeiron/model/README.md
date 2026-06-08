@@ -80,9 +80,9 @@ Stores post-processed predictions (Sigmoid/Softmax applied) that have been detac
 *   `pred_atn`: `(B, 1, N)` normalized attention weights (e.g., via Softmax).
 *   `pred_lbl`: `(B, C)` final slide-level probabilities.
 *   `pred_ann`: `(B, N, C)` final tile-level probabilities.
-*   `pred_obj`: A `list` (length `B`) of lists containing dictionaries for each detected ROI: `{"ids": int (the roi coords id), "labels": length C, "scores": float}`.
-*   `pred_txt`: A `list[str]` of generated text strings.
-*   **Post-processing fields**: `pred_crd` (coordinates), `pred_scr` (scores), and `pred_data_type` used by the Visualiser to render overlays.
+*   `pred_obj`: A `list` (length `B`) of lists containing dictionaries for each detected ROI: `{"ids": list[int] (the roi coords indices), "labels": np.ndarray of shape (C,), "scores": float}`.
+*   `pred_txt`: A `list[str]` (length `B`) of generated text strings.
+*   **Post-processing fields**: `post_processed` (bool flag), `pred_crd` (coordinates), `pred_scr` (scores), and `pred_data_type` used by the Visualiser to render overlays.
 
 #### 3. `Objectives`
 A container mapping raw PyTorch loss or metric tensors to their specific objective categories.
@@ -95,6 +95,7 @@ A container mapping raw PyTorch loss or metric tensors to their specific objecti
 The unified state container holding `head`, `pred`, `loss`, and `metric` during a training step.
 *   **`assign(mode, **kwargs)`**: Automatically routes dictionaries to the correct sub-dataclass. For example, `assign('head', lbl_logits=x)` places `x` directly into `self.head.lbl_logits`.
 *   **`composite_loss(final_loss, **importance)`**: Caches the auto-weighted `final_loss` used for `backward()` alongside the homoscedastic uncertainty importances.
+*   **`get_label_results()`**: Returns a formatted dictionary containing the predicted label (argmax index), the full probability array rounded to 4 decimal places, and any generated text strings if present: `{"label": int, "score": list[float], "text": str}`.
 
 ---
 
@@ -103,7 +104,7 @@ The unified state container holding `head`, `pred`, `loss`, and `metric` during 
 *   **Initialization Inputs**:
     *   `in_features` *(int)*: Dimension of input backbone embeddings (e.g. 768 or 1536).
     *   `mode` *(str, optional)*: `'slide'` or `'tile'`.
-    *   `inf_models` *(str or list[str], default='abmil')*: A list of models chosen from `['abmil', 'gatmil', 'roimil', 'classifier', 'unet', 'spconv', 'detr', 'generative', 'contrastive']`.
+    *   `inf_models` *(str or list[str], default='abmil')*: A list of models chosen from `['abmil', 'gatmil', 'roimil', 'mask2f', 'classifier', 'unet', 'spconv', 'detr', 'generative', 'contrastive']`.
     *   *Also passes all `kwargs` (like loss types and classes) down to `choose_inferencer()`*.
 *   **`forward(features, **kwargs)`**: Routes data to all sub-heads and compiles their outputs into a single `ModelData` object.
 *   **`AutomaticWeightedLoss`**: Dynamically weights multi-task losses using learnable variances (homoscedastic uncertainty) so you do not have to manually tune loss ratios between Slide prediction and ROI detection.
@@ -133,4 +134,51 @@ The unified state container holding `head`, `pred`, `loss`, and `metric` during 
     *   **Outputs**: Returns a tuple `(epoch_losses, epoch_metrics, predictions)`.
 *   **`predict_data(data, threshold=0.5, run_metric=True)`**:
     *   **Description**: A quick single-sample forward pass. Moves `data` dict to CUDA, runs inference, moves predictions back to CPU, and yields the `ModelData` result.
-*   **`save_inferencer(chkp_path, epoch=None)` / `load_inferencer(chkp_path)`**: Safely saves/loads optimizer states and model `.pth` dicts.
+*   **`save_inferencer(chkp_path, epoch=None)` / `load_inferencer(chkp_path)`**: Safely saves/loads optimizer states, training metadata, and model `.pth` checkpoints.
+*   **`save_stored_inference(store_path)` / `load_stored_inferencer(store_path)`**: Permanently exports or imports the entire active PyTorch model weights state as a completely standalone, plug-and-play inference file (no optimizer states or extra training scaffolding required) for deployment and immediate cross-project use.
+
+---
+
+## 4. Configuration Reference
+
+When initializing models via `setup_inferencer()` or driving the API through configuration files (like in `apeiron/analyze.py` or `apeiron/operate.py`), several key parameters dictate the learning objectives and optimization behavior.
+
+### Loss Types (`lbl_loss_type`, `ann_loss_type`)
+The loss type determines both the loss function applied during backpropagation and the corresponding metric mode (e.g., Softmax vs Sigmoid, Classification vs Regression vs Ranking).
+
+*   **Classification (Mutually Exclusive)**
+    *   `'hard_ce'`: Standard Cross-Entropy Loss. Best for single-label, mutually exclusive classes. Expects integer class indices. Uses Softmax.
+    *   `'focal'`: Focal Loss. A variant of Hard CE that down-weights easily classified examples to focus on hard-to-predict, minority classes. Excellent for imbalanced datasets.
+    *   `'soft_ce'`: Soft Cross-Entropy. Used when labels are probability distributions (floats summing to 1.0) rather than hard integers.
+
+*   **Multi-Label / Binary (Independent)**
+    *   `'bce'`: Binary Cross-Entropy with Logits. Best for binary classification or multi-label tasks where classes are independent of one another. Uses Sigmoid.
+    *   `'multilabel_focal'`: Focal Loss applied per-class for independent multi-label predictions. Useful for highly imbalanced multi-label datasets.
+
+*   **Regression**
+    *   `'mse'`: Mean Squared Error. Standard objective for continuous value prediction. Penalizes large errors heavily.
+    *   `'mae'`: Mean Absolute Error. Robust objective for continuous value prediction. Less sensitive to outliers than MSE.
+
+*   **Ranking (Class-Wise)**
+    *   `'margin'`: Pairwise Margin Loss. Ranks classes within a single sample based on soft float labels, enforcing a margin between higher-ranked and lower-ranked classes.
+    *   `'listnet'`: ListNet Loss. Optimizes the list-wise ranking of classes within a sample using KL-divergence on top-one probability distributions.
+
+*   **Segmentation / Masking**
+    *   `'dice'`: Dice Loss. Computes intersection over union. Highly recommended for tile-wise or pixel-wise annotations (like Mask2Former or UNet) to combat extreme background/foreground spatial imbalance.
+
+*   **Distribution Matching**
+    *   `'kldiv'`: KL-Divergence Loss. Measures how one probability distribution diverges from a second, expected probability distribution.
+
+### Training Configurations (`optim_cfgs`)
+These parameters govern the PyTorch optimization loop inside the `Inferencer`.
+
+*   **`lr` (Learning Rate)**: *(float, default: 1e-4)* The step size at each iteration while moving toward a minimum of a loss function.
+*   **`weight_decay`**: *(float, default: 0.0)* L2 regularization penalty applied to model weights to prevent overfitting. Typical values range from `1e-5` to `1e-2`.
+*   **`optimizer`**: *(str, default: 'adam')* The optimization algorithm.
+    *   `'adam'`: Adaptive Moment Estimation. Good default for most MIL and Transformer tasks.
+    *   `'adamw'`: Adam with decoupled weight decay. Often yields better generalization for transformers.
+    *   `'sgd'`: Stochastic Gradient Descent (usually with momentum). 
+*   **`scheduler`**: *(str, optional)* Strategy to adjust the learning rate over epochs.
+    *   `'cosine'`: Cosine Annealing. Smoothly decreases the LR following a cosine curve.
+    *   `'step'`: Step LR. Drops the LR by a factor after a set number of epochs.
+*   **`lbl_cls_weights` / `ann_cls_weights`**: *(dict, optional)* A dictionary mapping class indices to weight floats (e.g., `{0: 1.0, 1: 5.0}`). Passed to the loss functions to manually scale the gradient penalty for minority classes.

@@ -98,6 +98,33 @@ class ModelData:
             'final_loss': final_loss,
             **importance,
         }
+        
+    def get_label_results(self) -> dict:
+        """
+        Extracts the predicted label (argmax), the confidence score (rounded to 4 decimals),
+        and the corresponding text generation for a specific batch index.
+        """
+        results = {
+            "label": None,
+            "score": None,
+            "text": None
+        }
+        
+        # 1. Get the argmax label from pred_lbl (B, C)
+        if self.pred.pred_lbl is not None and len(self.pred.pred_lbl) > 0:
+            # Get the probability array for the specific batch
+            lbl_probs = self.pred.pred_lbl
+            # Get the index of the highest probability
+            results["label"] = int(np.argmax(lbl_probs))
+            
+            # 2. Get the score, rounded to 4 decimals
+            results["score"] = [round(x, 4) for x in lbl_probs.tolist()]
+            
+        # 3. Get the text string if it exists
+        if self.pred.pred_txt is not None and len(self.pred.pred_txt) > 0:
+            results["text"] = self.pred.pred_txt
+            
+        return results
 
 
 def choose_inferencer(

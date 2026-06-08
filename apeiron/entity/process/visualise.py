@@ -179,6 +179,7 @@ class Visualiser:
 
         # 2. Prepare `obj` which is (N, C)
         elif mode in ['pred_obj']:
+            self.draw_coords = self.proc_ext.coords
 
             # Sort objects by score descending
             obj_list = sorted(self.mdata.pred.pred_obj, key=lambda x: x['scores'], reverse=True)
@@ -285,7 +286,7 @@ class Visualiser:
                 loc='upper left', 
                 borderaxespad=0.,
                 fontsize=12,
-                title="Gleason Classes"
+                title="Classes"
             )
             plt.tight_layout() # Ensures legend isn't cut off
         plt.show()

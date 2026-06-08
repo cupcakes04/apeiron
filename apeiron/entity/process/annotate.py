@@ -111,9 +111,15 @@ class Annotator:
         """
         if ann_path is None:
             self.reset_anns()
-            return
+        
+        # Check if ann_path is directly annotation
+        elif isinstance(ann_path, dict):
+            if 'annotation' in ann_path:
+                self.annotation = ann_path['annotation']
+            if 'objects' in ann_path:
+                self.objects = ann_path['objects']
 
-        if self.ann_type == 'shape':
+        elif self.ann_type == 'shape':
             self.shape_ann_json = read_json(ann_path)
             self.annotation, self.objects = self.label_coords_by_json(coords, tile_size, active_coords)
 
@@ -180,6 +186,7 @@ class Annotator:
         """
         Returns:
             shape_fractions: (N, C) original density matrix.
+            Objects: ROI-level annotations, list of Dict, keys: {'label' -> list (length C), 'ids' -> np.ndarray (shape N_roi,)}
         """
         N = coords.shape[0]
         C = self.num_classes

@@ -7,7 +7,7 @@ import re
 from .manager import Manager
 from .searcher import Searcher
 from typing import Literal, List
-from apeiron.utils import convert_to_list, deep_assign, deep_get, save_and_show_plot
+from apeiron.utils import convert_to_list, deep_assign, deep_get, save_and_show_plot, inc_str_suffix, mkdir
 import random
 from sklearn.model_selection import train_test_split
 from apeiron.utils import np_unsqueeze, extend_dict
@@ -40,7 +40,7 @@ class Collector(Manager, Searcher):
         slides_collected_ann (dict): Cache of slide annotations keyed by slide_id.
         tiles_collected_data (dict): Cache of tile features for repeated access.
     """
-    def __init__(self, **kwargs):
+    def __init__(self, downstream_model_path: Path = None, **kwargs):
         super().__init__(**kwargs)
         self.reset_collector()
         self.manifest = {}
@@ -49,12 +49,14 @@ class Collector(Manager, Searcher):
         self.train_history = {}
         self.valid_history = {}
         self.index_built = False
+        self.downstream_model_path: Path = Path(downstream_model_path)
 
     def reset_collector(self):
         """Reset all collected data caches."""
         self.slides_collected_ann = {}
         self.tiles_collected_data = {}
         self.index_built = False
+
 
     # |-----------------------------------------------|
     # |------------ Collect Processed Data -----------|
@@ -288,9 +290,18 @@ class Collector(Manager, Searcher):
         self.train_ids = df[df['train'] == 1][id_col].unique().tolist()
         self.valid_ids = df[df['valid'] == 1][id_col].unique().tolist()
 
-    def intitalise_inferencer(self, mode: Literal['slide', 'tile'], load_epoch='best', inf_id: int = None):
+    def store_inferencer(self, name='model'):
+        numered_name = inc_str_suffix(name)
+        mkdir(self.downstream_model_path)
+        self.analyzer.store_inferencer(self.downstream_model_path / f"{self.project_path.name}_{numered_name}")
+
+    def intitalise_inferencer(self, mode: Literal['slide', 'tile'], load_epoch='best', inf_id: int = None, direct_name: str = None):
         if not self.available_modes[mode]: return
         self.inf_mode = mode
+
+        if direct_name is not None:
+            self.analyzer.load_stored_inferencer(store_path = self.downstream_model_path / direct_name)
+            return
 
         if mode == 'slide':
             feats_configs = self.slide_feats_configs
@@ -314,7 +325,7 @@ class Collector(Manager, Searcher):
 
         # Pass configs for setup
         cur_configs = self.analyzer.prepare_inferencer(
-            mode, feats_configs,
+            mode = mode, feats_configs = feats_configs,
             lbl_class_id_map = label_configs.get('class_id_map'), ann_class_id_map = ann_configs.get('class_id_map'),
             lbl_cls_weights = label_configs.get('class_id_weights'), ann_cls_weights = ann_configs.get('class_id_weights'),
             **model_configs, **train_configs, return_cfgs=True,
@@ -510,7 +521,7 @@ class Collector(Manager, Searcher):
                     img_emb = self.analyzer.get_contrastive_embeddings(features=self.analyzer.proc_ext.features).get('img_emb')
                     yield {
                         'id': slide_id, 'features': self.analyzer.proc_ext.features, 
-                        'coords': self.analyzer.proc_ext.coords, "img_emb": to_cpu(img_emb).numpy()
+                        'coords': self.analyzer.proc_ext.coords, "img_emb": to_cpu(img_emb, numpy=True)
                     }
 
         elif mode == 'tile':
@@ -521,7 +532,7 @@ class Collector(Manager, Searcher):
                     img_emb = self.analyzer.get_contrastive_embeddings(features=self.analyzer.proc_ext.features).get('img_emb')
                     yield {
                         'id': new_tile_ids, 'features': self.analyzer.proc_ext.features, 
-                        'coords': self.analyzer.proc_ext.coords, "img_emb": to_cpu(img_emb).numpy()
+                        'coords': self.analyzer.proc_ext.coords, "img_emb": to_cpu(img_emb, numpy=True)
                     }
 
         return descriptor_generator
@@ -580,6 +591,6 @@ class Collector(Manager, Searcher):
             txt_mode = 'img' if 'img' in query_mode else 'wrd'
             img_emb = convert_to_list(query_feat_id)
             wrd_emb = self.analyzer.get_contrastive_embeddings(text=query_text).get('wrd_emb')
-            wrd_res = self.find_similar_text(mode=txt_mode, img_emb=img_emb, wrd_emb=to_cpu(wrd_emb).numpy())
+            wrd_res = self.find_similar_text(mode=txt_mode, img_emb=img_emb, wrd_emb=to_cpu(wrd_emb, numpy=True))
             
         return SimDF(feat_res=feat_res, roi_res=roi_res, wrd_res=wrd_res)

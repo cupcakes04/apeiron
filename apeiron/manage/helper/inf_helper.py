@@ -50,7 +50,7 @@ def find_epoch(valid_history, load_epoch: Literal['best', 'last'] = 'best'):
     chosen_epoch = 0
     for epoch, history in valid_history.items():
         epoch = int(epoch)
-        new_final_loss = deep_get(history, keys=['composite', 'final_loss'])
+        new_final_loss = deep_get(history, keys=['loss', 'composite', 'final_loss'])
         if load_epoch == 'last':
             continue
         elif final_loss is None or new_final_loss < final_loss:

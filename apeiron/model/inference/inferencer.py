@@ -6,7 +6,7 @@ import torch
 from typing import Literal, List
 import numpy as np
 from pathlib import Path
-from apeiron.utils import get_device, extend_dict, save_and_show_plot
+from apeiron.utils import get_device, extend_dict, is_truly_empty
 from tqdm import tqdm
 from apeiron.utils import to_cpu
 import matplotlib.pyplot as plt
@@ -25,7 +25,7 @@ class Inferencer:
         
         self.epoch_losses: dict = {}
         self.epoch_metrics: dict = {}
-        self.epoch_xy: dict = {'true_ann': [], 'true_lbl': [], 'pred_ann': [], 'pred_lbl': []}
+        self.epoch_xy = {'true_ann': [], 'true_lbl': [], 'pred_ann': [], 'pred_lbl': [], 'true_obj': [], 'pred_obj': []}
 
 
     # |-----------------------------------------------|
@@ -208,7 +208,7 @@ class Inferencer:
 
         self.epoch_losses = {}
         self.epoch_metrics = {}
-        self.epoch_xy = {'true_ann': [], 'true_lbl': [], 'pred_ann': [], 'pred_lbl': []}
+        self.epoch_xy = {'true_ann': [], 'true_lbl': [], 'pred_ann': [], 'pred_lbl': [], 'true_obj': [], 'pred_obj': []}
 
         n_samples = 0
         for data in tqdm(data_collector):
@@ -219,18 +219,22 @@ class Inferencer:
             self.inferencer.metric(mdata, threshold=threshold, **data)
             
             # For `val_graphs` to use without re-running
-            record_lbl, record_ann = False, False
-            if 'label' in data: 
+            record_lbl, record_ann, record_obj = False, False, False
+            if not is_truly_empty(data.get('label')):
                 self.epoch_xy['true_lbl'].append(to_cpu(data['label']))
                 record_lbl = True
-            if 'annotation' in data:
+            if not is_truly_empty(data.get('annotation')):
                 self.epoch_xy['true_ann'].append(to_cpu(data['annotation']))
                 record_ann = True
+            if not is_truly_empty(data.get('objects')):
+                self.epoch_xy['true_obj'].append(data['objects'])
+                record_obj = True
                 
             for _, head_mod in self.inferencer.heads.items():
                 res = head_mod.result
                 if 'pred_lbl' in res and record_lbl: self.epoch_xy['pred_lbl'].append(res['pred_lbl'])
                 if 'pred_ann' in res and record_ann: self.epoch_xy['pred_ann'].append(res['pred_ann'])
+                if 'pred_obj' in res and record_obj: self.epoch_xy['pred_obj'].append(res['pred_obj'])
             
             self.cum_epoch(mdata.loss.get_dict(composite=mdata.composite), self.epoch_losses)
             self.cum_epoch(mdata.metric.get_dict(), self.epoch_metrics)
@@ -271,6 +275,8 @@ class Inferencer:
         all_pred['label'] = self.epoch_xy.get('pred_lbl', [])
         all_true['annotation'] = self.epoch_xy.get('true_ann', [])
         all_pred['annotation'] = self.epoch_xy.get('pred_ann', [])
+        all_true['objects'] = self.epoch_xy.get('true_obj', [])
+        all_pred['objects'] = self.epoch_xy.get('pred_obj', [])
 
         # 2. Analyze Label Modality
         analysis_results = {}
@@ -292,6 +298,31 @@ class Inferencer:
             if show: print(f"\n--- Annotation Analysis ({self.ann_mode}) ---")
             save_base = Path(save_dir) / f'annotation/epoch_{epoch}' if save_dir and epoch is not None else None
             analysis_results['annotation'] = plot_analysis(y_true, y_pred, self.ann_mode, title_prefix="Annotation", save_base=save_base, show=show)
+
+        # 4. Analyze Objects Modality
+        if all_true.get('objects') and all_pred.get('objects'):
+            y_true_list = []
+            y_pred_list = []
+            
+            for batch_true, batch_pred in zip(all_true['objects'], all_pred['objects']):
+                # batch_true and batch_pred are lists of length B
+                for b in range(min(len(batch_true), len(batch_pred))):
+                    true_objs_b = batch_true[b]
+                    pred_objs_b = batch_pred[b]
+                    
+                    if true_objs_b and pred_objs_b:
+                        for i, roi in enumerate(true_objs_b):
+                            if i < len(pred_objs_b):
+                                y_true_list.append(roi['label'])
+                                y_pred_list.append(pred_objs_b[i]['labels'])
+                                
+            if y_true_list and y_pred_list:
+                y_true = np.array(y_true_list)
+                y_pred = np.array(y_pred_list)
+                
+                if show: print(f"\n--- Objects Analysis ({self.ann_mode}) ---")
+                save_base = Path(save_dir) / f'objects/epoch_{epoch}' if save_dir and epoch is not None else None
+                analysis_results['objects'] = plot_analysis(y_true, y_pred, self.ann_mode, title_prefix="Objects", save_base=save_base, show=show)
 
         return analysis_results
 
@@ -320,3 +351,11 @@ class Inferencer:
 
         # 3. Move to device
         self.inferencer.to(self.device)
+
+    def save_stored_inference(self, store_path):
+        ''' permanently hard saves inferencer as a plug and play model for direct use '''
+        torch.save(self.inferencer, store_path)
+    
+    def load_stored_inferencer(self, store_path):
+        ''' permanently load an inferencer '''
+        self.inferencer = torch.load(store_path, map_location=self.device, weights_only=False)

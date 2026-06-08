@@ -68,10 +68,19 @@ The `Analyzer` is a single-slide/single-class inspector. The Manager "serves" da
 *   **Inputs**:
     *   `slide_id` *(str)*: UUID of the slide.
     *   `tile_class` *(str)*: Directory class name of the tiles.
-    *   `data_modes` *(str or list[str], default='req')*: Specifies which artifacts to load from disk into memory. Common values include `'embeddings'`, `'thumbnails'`, `'feats_color'`.
+    *   `data_modes` *(str or list[str], default='req')*: Specifies which artifacts to load from disk into memory. Common values include `'embeddings'`, `'thumbnails'`, `'feats_color'`, and `'prediction'`.
+    *   `**kwargs`: Arbitrary keyword arguments forwarded to child processors or prediction tasks. Specifically, if `'prediction'`/`'pred'`/`'all'` is requested in `data_modes`, you can pass:
+        *   `ann_path` *(str or Path, optional)*: Explicit override path to an annotation file or the direct annotation dict in numpy array, see below.
+        *   `ann_type` *(str, optional)*: Annotation type (`'shape'` or `'pixel'`).
+        *   `ground_truth` *(bool, default=False)*: Runs evaluation against ground-truth labels if provided.
 *   **Outputs**:
     *   *(None)*. The `self.analyzer` is now populated. You can subsequently call `self.analyzer.get_slide_thumbnail()`, `self.analyzer.get_feature_map()`, etc.
-
+```python
+{
+  "annotation": np.ndarray,      # (N, C) class fractions/activations matrix
+  "objects": list[dict]          # ROI-level annotations list (as described above)
+}
+```
 ---
 
 ## 4. Training & Data Collection
@@ -95,8 +104,16 @@ Functions used to orchestrate ML pipelines via the PyTorch Inferencer framework.
     *   `mode` *(str)*: `'slide'` or `'tile'`.
     *   `load_epoch` *(int or str, default='best')*: Which epoch weights to load if a checkpoint exists.
     *   `inf_id` *(int, optional)*: Specific inferencer ID.
+    *   `direct_name` *(str, optional)*: If specified, skips loading standard epoch checkpoints and instead directly loads a pre-compiled, standalone model file from the designated `downstream_model_path` (e.g., `direct_name='task1_model_1'`).
 *   **Outputs**:
     *   *(None)*. Populates `self.inferencer` (a `Composite` or specific model).
+
+### `store_inferencer`
+**Description**: Permanently serializes the active inferencer's trained network state as a standalone model file within the central `downstream_model_path`.
+*   **Inputs**:
+    *   `name` *(str, default='model')*: Base name for the saved file. APEIRON automatically appends an incremented integer suffix (e.g. `model_1`, `model_2`) and prefixes the file with the current project directory's name to avoid naming collisions across projects.
+*   **Outputs**:
+    *   *(None)*. Saves the plug-and-play model as `downstream_model_path / f"{project_name}_{name}_{suffix}"`.
 
 ### `train`
 **Description**: Executes the PyTorch training loop over `n_epochs`. Calls `slide_features_collector` internally to stream data.
@@ -121,6 +138,7 @@ Functions used to orchestrate ML pipelines via the PyTorch Inferencer framework.
     *   `collect_ids` *(list)*: IDs to yield.
     *   `shuffle` *(bool, default=False)*: Whether to shuffle the IDs.
     *   `batch_size` *(int)*: Items to yield per iteration.
+    *   `cache` *(bool, default=False for slide, True for tile)*: Whether to cache the processed feature data into RAM to speed up future epochs (warning: requires high memory).
 *   **Yields**:
     *   A dictionary representing the processed WSI/Tile data. Keys typically include:
         *   `id`: UUID
@@ -134,14 +152,13 @@ Functions used to orchestrate ML pipelines via the PyTorch Inferencer framework.
 
 ## 5. Similarity Search (FAISS)
 
-Exposed methods for global descriptor matching (VLAD) via FAISS.
+Exposed methods for global descriptor matching (VLAD) and contrastive text-image alignment via FAISS.
 
 ### `fit_from_generator`
 **Description**: Dynamically fits the KMeans clustering centroids using a subset of the dataset to avoid out-of-memory errors.
 *   **Inputs**:
     *   `descriptor_generator` *(Generator)*: Usually the output of `get_descriptor_generator(mode='slide')`.
     *   `max_samples` *(int, default=250000)*: The absolute maximum number of tiles to ingest into the training buffer.
-    *   `max_per_yield` *(int, default=2000)*: Subsamples heavily from each slide to guarantee morphological diversity across the cohort.
 *   **Outputs**:
     *   *(None)*. Trains and sets `self.centers` and initializes the `IndexFlatL2`.
 
@@ -152,13 +169,22 @@ Exposed methods for global descriptor matching (VLAD) via FAISS.
 *   **Outputs**:
     *   *(None)*. Populates the global FAISS index with the dataset.
 
-### `find_similar_feat` / `find_similar_text`
-**Description**: Queries the index to return the most similar slides to a given query.
+### `find_similar_feat`
+**Description**: Queries the VLAD index to return the most similar slides to a given query vector.
 *   **Inputs**:
-    *   `query_feat_vec` / `wrd_emb` *(np.ndarray)*: The feature vector to search for.
+    *   `query_feat_vec` *(np.ndarray or str)*: The feature vector or the slide ID/name to prepare and query.
     *   `top_k` *(int, default=5)*: Number of matches to return.
 *   **Outputs**:
-    *   Returns a list of matching `slide_id`s or a tuple containing distances and IDs.
+    *   Returns a `pd.DataFrame` containing columns `['id', 'distance']` of matching items.
+
+### `find_similar_text`
+**Description**: Computes cross-modal similarity scores between visual embeddings (`img_emb`) and linguistic word embeddings (`wrd_emb`).
+*   **Inputs**:
+    *   `img_emb` *(np.ndarray or str or list[str])*: Image embeddings, slide IDs, or slide paths.
+    *   `wrd_emb` *(np.ndarray)*: Word embedding vectors.
+    *   `mode` *(str)*: Search direction mode. Must be `'wrd'` (calculates word-to-image score) or `'img'` (calculates image-to-word score).
+*   **Outputs**:
+    *   Returns a `pd.DataFrame` containing the computed similarity score matrix between images and words.
 
 ---
 
@@ -218,7 +244,7 @@ The unified entry point that orchestrates the individual slide and tile registri
 #### `SlideRegistry` (`slide_reg.py`)
 Handles WSI-specific tracking.
 
-*   **`ingest_slide_classes()`**: Recursively walks the `DATASETS/` folder looking for valid whole slide extensions (`.svs`, `.ndpi`, `.tif`, etc.).
+*   **`ingest_slide_classes(slide_classes)`**: Recursively walks the specified class folders inside `DATASETS/` looking for valid whole slide extensions (`.svs`, `.ndpi`, `.tif`, etc.).
 *   **`_register_slide()`**: Generates a `uuid4().hex` for the slide and logs its path relative to `DATASETS/` to avoid hardcoded absolute paths breaking if the database is moved.
 *   **`query_registry()`**: Returns a Pandas DataFrame containing the matched slide UUIDs.
 

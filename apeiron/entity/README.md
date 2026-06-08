@@ -24,11 +24,14 @@ Encapsulates data ready to be streamed to a model. The `generator()` method allo
 class PreData:
     coords: np.ndarray | list       # Tile coordinates, shape (N, 2)
     features: np.ndarray | list     # Feature embeddings, shape (N, F)
-    annotation: np.ndarray | None   # Target annotation arrays, shape (N, C)
-    text: str | list | None         # Textual data (captions/prompts)
-    label: list | int | None        # Slide-level label, shape (C,) or int
-    objects: list[dict] | None      # ROI-level annotations. Dict keys: {'label': list (length C), 'ids': np.ndarray (shape N_roi,)}
+    annotation: np.ndarray | list | None   # Target annotation arrays, shape (N, C)
+    label: np.ndarray | list | None        # Slide-level label, shape (C,) or int
+    objects: list[dict] | None      # ROI-level annotations, list of Dict, keys: {'label' -> list (length C), 'ids' -> np.ndarray (shape N_roi,)}
+    
+    # Utility data
+    data_len: int | None
     metadata: dict                  # Slide ID, model modes, metadata
+    gen_defaults: dict              # Default kwargs for generator
 ```
 
 **2. `ProcessedExt` (`helper/features.py`)**
@@ -36,13 +39,18 @@ Used to store fully extracted features and their computed clustering/dimensional
 ```python
 @dataclass
 class ProcessedExt:
-    coords: np.ndarray              # Base coordinates (N, 2)
-    features: np.ndarray            # Primary feature embeddings (N, F)
-    coords_size: int
-    feats_size: int
-    feat_color: np.ndarray          # (N, 3) RGB values for UMAP/PCA plots
-    feat_clusters: np.ndarray       # (N,) Int cluster assignments (e.g. KMeans)
-    feat_score: np.ndarray          # (N,) Anomaly/Similarity ranking scores
+    # Basic Extractions
+    coords: np.ndarray | None       # Base coordinates (N, 2)
+    features: np.ndarray | None     # Primary feature embeddings (N, F)
+    coords_size: int | None
+    feats_size: int | None
+    objects: list[dict] | None      # Extracted ROIs mapped to the features
+    
+    # Feature manipulations
+    feats_color: np.ndarray | None     # (N, 3) RGB values for UMAP/PCA plots
+    feats_score: np.ndarray | None     # (N, 1) Anomaly/Similarity ranking scores
+    feats_clusters: np.ndarray | None  # (N,) Int cluster assignments (e.g. KMeans)
+    feats_color_map: np.ndarray | None # (n_clusters, 3) RGB color mapping for each cluster
 ```
 
 **3. `VizData` (`visualise.py`)**
@@ -111,12 +119,22 @@ Requires a `.tiff` or `.tif` file. It expects an image mask that maps directly o
   * If you provide a raw **single-channel `(H, W)` mask** containing integer class indices, Apeiron will automatically one-hot encode it into the required `(H, W, C)` binary mask using the internal `mask_to_binary()` helper.
   * If the mask's resolution does not perfectly align with the expected coordinate downscale factor, Apeiron will automatically interpolate and scale it using `resize_mask()` to ensure perfect spatial alignment with the tiles. (into 16x downsample, optimal factor btw, so downscale them first too)
 
+**3. Direct Dictionary Format**
+Instead of loading files from disk, you can directly pass a pre-loaded dictionary to `process_annotations` as the `ann_path` argument containing pre-computed targets. It can contain either or both of these keys:
+```python
+{
+  "annotation": np.ndarray,      # (N, C) class fractions/activations matrix
+  "objects": list[dict]          # ROI-level annotations list (as described above)
+}
+```
+
 ### Core Modules (`process/`)
 *   **`Processor` (`processor.py`)**: A heavy-weight class that uses Multiple Inheritance (`Reader`, `Annotator`, `Visualiser`) to expose a unified API for a slide.
     *   `assign_features()`: Handles the injection of `embeddings`. It can flatten hierarchies (merging class tokens and patch tokens via `max`, `mean`, or `discard`) down to flat `(N, F)` tensors.
     *   `slide_preprocessor()` & `tile_preprocessor()`: Packages the internal variables, coordinates, and annotations into a `PreData` object.
     *   `postprocessor()`: Ingests raw outputs (`mdata`) from Inferencers and integrates them back into the internal state (e.g., appending model attention weights back to visualizable space).
 *   **`Annotator` (`annotate.py`)**: Handles intersection algorithms and spatial geometry.
+    *   `process_annotations(coords, tile_size, ann_path, active_coords=False)`: Standard entry point to load and parse annotations. Safely dispatches based on file extensions or accepts a pre-loaded annotations dictionary (as described in the Direct Dictionary Format above) or `None` (resets annotations).
     *   `label_coords_by_json()`: Intersects GeoJSON boundary polygons with strict `(N, 2)` coordinate grids to determine which tiles belong to which annotation class.
     *   `mask_to_binary()` & `resize_mask()`: Resolves raw bitmap masks into clean, scalable `(N, C)` matrices.
 *   **`Visualiser` (`visualise.py`)**: Generates high-quality NumPy array visualizations and Matplotlib plots.

@@ -153,7 +153,7 @@ class Analyzer(Extractor, Processor, Inferencer):
     # |-----------------------------------------------|
 
 
-    def prepare_inferencer(self, 
+    def prepare_inferencer(self,
         mode=None, feats_configs=None, inf_models = 'abmil', 
         lbl_class_id_map=None, ann_class_id_map=None,
         lbl_cls_weights=None, ann_cls_weights=None,
@@ -161,7 +161,6 @@ class Analyzer(Extractor, Processor, Inferencer):
         lr=1e-4, optimizer='adam', weight_decay: float = 0.0, scheduler: str = None,
         return_cfgs=False,
     ):
-
         # If feature aggregation, feature size * 2
         in_features = self.model_dim
         is_patch = bool(feats_configs['window_level'] == 'patch')
@@ -203,7 +202,7 @@ class Analyzer(Extractor, Processor, Inferencer):
         Returns:
             ModelData: Consolidated dataclass containing predictions (pred_lbl, pred_ann, etc.).
         """
-
+        
         if feats_configs:
             self.prepare_features(**feats_configs)
         if ann_path:
@@ -222,3 +221,6 @@ class Analyzer(Extractor, Processor, Inferencer):
         
         self.mdatas = mdatas
         return self.postprocessor(mdatas, datas)
+
+    def store_inferencer(self, store_path):
+        self.save_stored_inference(store_path)

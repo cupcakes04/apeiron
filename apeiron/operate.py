@@ -28,7 +28,11 @@ class Operator:
             - project_path (str): Project directory containing config.yaml and dataset CSVs.
     """
     def __init__(self, backbone: Backbone, root_dir: str, **kwargs):
-        self.collector = Collector(backbone=backbone, root_dir=root_dir, device=kwargs.get('device'))
+        self.collector = Collector(
+            backbone=backbone, root_dir=root_dir, 
+            downstream_model_path=kwargs.get('downstream_model_path'),
+            device=kwargs.get('device'),
+        )
     
     def setup(self, project_path: str):
         """Fully reset the operator to a new project.
@@ -77,6 +81,8 @@ class Operator:
         return self.collector.tile_features_collector(*args, **kwargs)
     def intitalise_inferencer(self, *args, **kwargs):
         return self.collector.intitalise_inferencer(*args, **kwargs)
+    def store_inferencer(self, *args, **kwargs):
+        return self.collector.store_inferencer(*args, **kwargs)
     def similarity_search(self, *args, **kwargs):
         return self.collector.similarity_search(*args, **kwargs)
 

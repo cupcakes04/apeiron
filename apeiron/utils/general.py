@@ -168,7 +168,7 @@ def inc_str_suffix(s: str, num: int = None) -> str:
     else:
         # If no digits at the end, just append "_1"
         number = num if num else 1
-        return s + f"_{num}"
+        return s + f"_{number}"
     
 def deep_get(dictionary, keys, default=None):
     """Safely navigate nested dictionaries using a list of keys.
@@ -265,5 +265,26 @@ def np_unsqueeze(x):
         return np.array([x])
     return x
 
-def to_cpu(x: torch):
-    return x.detach().cpu().float()
+def to_cpu(x: torch, numpy=False):
+    if isinstance(x, torch.Tensor):
+        x = x.detach().cpu().float()
+        if numpy:
+            return x 
+        else:
+            return x.numpy()
+    else:
+        return None
+
+def is_truly_empty(x):
+    # 1. Check if it's None
+    if x is None:
+        return True
+    
+    # 2. Check if it's a collection (list, tuple, etc.)
+    if isinstance(x, (list, tuple, set, dict)):
+        # If it has length, check if all its elements are also "empty"
+        # If it has no length (len == 0), it's empty
+        return len(x) == 0 or all(is_truly_empty(i) for i in x)
+    
+    # 3. If it's not a collection and not None, it has a value
+    return False
