@@ -333,27 +333,52 @@ analyzer.prepare_tiles_dataset(mode='slide')
 analyzer.extract_tiles(batch_size=300, num_workers=4, ext_patch_strategy='discard')
 ```
 
-#### 4. Feature Post-Processing & Unsupervised Clustering
+#### 4. Feature Post-Processing & Dimensionality Visualization
+Once slide embeddings are extracted, you can group, aggregate, and visualize high-dimensional features (e.g., 1536-dim vectors from `hop0`) using spatial pooling, unsupervised PCA, K-Means clustering, or query-based similarity scoring:
+
+##### A. Configure Feature Representation Level
+Call `analyzer.prepare_features` to specify how individual ViT patch tokens are spatially pooled or structured:
+*   `window_level`: Specifies the spatial representation level.
+    *   `'tile'`: Default window size of the backbone.
+    *   `'grid'`: Merges tiles spatially into larger uniform blocks (configured via `grid_size`).
+    *   `'patch'`: Retains raw individual ViT patch tokens for precise, micro-level tissue segmentation.
+*   `patch_to_tile`: Defines token aggregation strategy. Options: `'mean'`, `'max'`, `'discard'`.
+*   `grid_size`: Dimension of the feature grid merge (e.g., `2`, `8`).
+
+##### B. Visualization & Heatmap Overlay Modes
+APEIRON supports three distinct dimensional reduction and overlay visualizations:
+*   **PCA Feature Color Map (`mode='color'`)**: Uses Principal Component Analysis (PCA) to compress high-dimensional feature spaces directly into 3D RGB color channels, allowing you to visually recognize structural shifts in tissue morphology.
+*   **Unsupervised K-Means Clusters (`mode='clusters'`)**: Groups embedding vectors into distinct feature categories (e.g., automatically segmenting tumor epithelium vs. benign stroma).
+*   **Cosine Similarity Scores (`mode='score'`)**: Calculates and maps similarity values of every spatial tile relative to selected target query indices (ideal for targeted cell or structure searches).
+
 ```python
-# Group features into spatial grids (window_level can be 'tile', 'grid', or 'patch')
+# 1. Post-process raw slide embeddings into spatial grid blocks
 analyzer.prepare_features(window_level='tile', patch_to_tile='mean', grid_size=2)
 
-# Compress massive (N, 1536) embedding spaces into 3D RGB space via PCA
+# 2. Compute and render PCA Feature Color overlay
 analyzer.compute_feats_color(method='pca')
 viz_color = analyzer.create_feature_viz(mode='color')
-viz_color.show(alpha=0.5)  # Overlay PCA features on the slide overview
+viz_color.show(alpha=0.5)
 
-# Spatial K-means clustering (e.g., automatically segmenting stroma vs epithelium)
+# 3. Compute and render K-Means spatial cluster overlay
 analyzer.compute_feats_color(n_clusters=10)
 viz_clusters = analyzer.create_feature_viz(mode='clusters')
 viz_clusters.show(alpha=0.5)
+
+# 4. Compute and render Tile Cosine Similarity Score overlay
+# Target query indices can be manually chosen to match reference structures
+analyzer.compute_feats_color(query_indices=[0, 2, 4])
+viz_score = analyzer.create_feature_viz(mode='score')
+viz_score.show(alpha=0.5)
 ```
 
 <p align="center">
-  <img src="apeiron/assets/images/feature_cluster.png" height="450" alt="Unsupervised Spatial Feature Clusters" />
+  <img src="apeiron/assets/images/feature_color.png" height="280" alt="PCA Feature Color Map" />
+  <img src="apeiron/assets/images/feature_cluster.png" height="280" alt="K-Means Feature Clusters" />
+  <img src="apeiron/assets/images/feature_score.png" height="280" alt="Query Cosine Similarity Scores" />
 </p>
 <p align="center">
-  <em>Figure 3: Unsupervised spatial feature clustering mapping stroma, epithelium, and glandular structures.</em>
+  <em>Figure 3: Slide feature visualization overlays. Left: project high-dimensional embeddings into 3D RGB space via PCA. Middle: Unsupervised K-Means clustering isolating stroma, epithelium, and glands. Right: Cosine similarity mapping relative to selected target query structures.</em>
 </p>
 
 #### 5. Manual Ground-Truth Annotation Overlay
