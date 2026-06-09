@@ -479,6 +479,33 @@ operator.generate_embeddings_slide(batch_size=300, num_workers=4)
 operator.generate_feats_color()
 ```
 
+#### 4. Instant Slide Serving & Active Exploration
+Once your cohort artifacts are generated and cached, you can "serve" any slide instantly by its UUID. 
+
+Calling `operator.serve_slide_analyzer(slide_id, data_modes='all')` dynamically streams all pre-calculated slide records (tissue masks, coordinates, HDF5 embeddings, PCA colors) from the database and returns a **fully functional `Analyzer` instance**:
+
+```python
+# 1. Grab absolute slide UUID from the database index using its name
+slide_id = operator.lookup_table('slide_001', mode='slide')[0]
+
+# 2. Serve the slide. This returns a fully-fledged, active low-level Analyzer!
+# Specifying data_modes='all' automatically loads all pre-calculated assets
+analyzer = operator.serve_slide_analyzer(slide_id, data_modes='all')
+
+# 3. All Analyzer methods are now instantly available with zero computation overhead!
+# No raw SVS file openings, no tiling, and no Vision Transformer (ViT) feature extractions are required.
+viz_clusters = analyzer.create_feature_viz(mode='clusters')
+viz_clusters.show(alpha=0.5)
+
+# You can run stain normalizations, annotation overlays, clustering, or predictions:
+analyzer.prepare_annotations(ann_path="annotations/shape/slide_001.json", ann_type="shape")
+viz_ann = analyzer.create_annotation_viz(mode='annotation')
+viz_ann.show()
+```
+
+> 💡 **The Power of the Served Analyzer**
+> By serving a slide, you bridge the gap between low-level interactive research and high-level database scales. The returned `analyzer` object is identical in class structure and capability to a manual slide-opened `Analyzer`, meaning **any method, visualization, or custom post-processing routine demonstrated in Phase 1 can be executed instantly** on served slides!
+
 ---
 
 ### Phase 3: Multi-Task Downstream Training
