@@ -1,0 +1,24 @@
+# Core Scientific & Data Processing
+numpy>=1.22.0
+pandas>=1.5.0
+scipy>=1.9.0
+scikit-learn>=1.2.0
+matplotlib>=3.6.0
+pyyaml>=6.0
+h5py>=3.8.0
+tqdm>=4.64.0
+
+# Deep Learning Framework
+torch>=2.0.0
+torchvision>=0.15.0
+
+# HuggingFace & Vision-Language Modeling
+transformers>=4.30.0
+peft>=0.4.0
+
+# Digital Pathology & WSI Processing
+openslide-python>=1.2.0
+tiatoolbox>=1.4.0
+
+# Vector Similarity Search (Use faiss-cpu>=1.7.4 for CPU-only environments)
+faiss-gpu>=1.7.4

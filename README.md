@@ -64,7 +64,59 @@ APEIRON is engineered to eliminate the high computational overhead of digital pa
 
 ---
 
-## 📂 Database & Project Directory Layouts
+## �️ Installation & System Requirements
+
+### 1. Python Environment Setup
+APEIRON is fully compatible with **Python 3.10** or **3.11**. We strongly recommend isolating your workspace inside a Conda environment:
+
+```bash
+# 1. Create and activate a dedicated conda workspace
+conda create -n apeiron python=3.10 -y
+conda activate apeiron
+
+# 2. Install all python library requirements
+pip install -r requirements.txt
+```
+
+### 2. System-Level Prerequisites
+Since APEIRON processes massive Whole Slide Images (WSIs), you **must** have the native C library **OpenSlide** installed on your host system:
+
+*   **Ubuntu / WSL / Debian**:
+    ```bash
+    sudo apt-get update
+    sudo apt-get install -y openslide-tools libopenslide-dev
+    ```
+*   **macOS (via Homebrew)**:
+    ```bash
+    brew install openslide
+    ```
+*   **Windows**:
+    1. Download the binary package from the [OpenSlide download page](https://openslide.org/download/).
+    2. Extract and add the `/bin` directory containing the `.dll` files to your system's `PATH`. Alternatively, use **WSL** (recommended) to bypass manual Windows DLL pathing overhead entirely.
+
+### 3. Critical Library Conflict Resolutions
+
+#### A. Similarity Search: FAISS Configuration
+APEIRON leverages GPU-accelerated FAISS flat indices for extremely fast similarity searches across millions of patches.
+*   **For GPU Acceleration (recommended for speed)**:
+    Ensure you install `faiss-gpu` instead of `faiss-cpu`. **WARNING**: Do not install both in the same environment as they conflict:
+    ```bash
+    pip uninstall faiss-cpu
+    pip install faiss-gpu
+    ```
+*   **For CPU-Only Environments**:
+    Keep `faiss-cpu` (installed by default via `requirements.txt`).
+
+#### B. Sparse Segmentation (Optional Head)
+If you utilize spatially sparse convolutional architectures (like `spconv` segmenters):
+*   Install the pre-compiled sparse convolution library matching your system's PyTorch CUDA version:
+    ```bash
+    pip install spconv-cu118  # Or spconv-cu121 depending on CUDA version
+    ```
+
+---
+
+## � Database & Project Directory Layouts
 
 Before running any code, organize your directories. APEIRON strictly separates raw clinical files (read-only datasets) from pre-calculated artifacts (HDF5 features/images) and project-specific study folders.
 
@@ -382,7 +434,7 @@ viz_score.show(alpha=0.5)
 </p>
 
 #### 5. Manual Ground-Truth Annotation Overlay
-If you have manual annotations (such as GeoJSON boundary shapes exported from QuPath, TIFF pixel masks, or direct dictionary annotations), you can align them with your spatial extraction grids for training or validation:
+If you have manual annotations (such as GeoJSON boundary shapes exported from QuPath, TIFF pixel masks, or direct dictionary annotations) [Annotation Formats Guide](apeiron/entity/README.md#expected-raw-annotation-formats) , you can align them with your spatial extraction grids for training or validation:
 
 ```python
 # Load manual/ground-truth annotations (e.g., QuPath GeoJSON shapes or pixel masks)
@@ -622,7 +674,7 @@ operator.intitalise_inferencer(mode='slide', direct_name='task1_production_1')
 slide_id = operator.lookup_table(['slide_001'], mode='slide')[0]
 
 # 2. Structured ROI Annotations:
-# Package custom annotations and region bounding boxes mapping tile indices to target classes
+# Package custom annotations and region bounding boxes mapping tile indices to target classes (label key is placeholder only, not processed)
 ann_path = {
     'annotations': None,  # (N, C) tile-level mask array (if any)
     'objects': [
@@ -649,7 +701,7 @@ viz.show()
 > *   `'pred_lbl'`: Renders a class color overlay representing the slide-level label prediction.
 > *   `'pred_ann'`: Displays the model's localized tile-level prediction maps.
 > *   `'pred_atn'`: Renders a heatmapped overlay of the visual attention weights (e.g., highlighting where the MIL model focused).
-> *   `'pred_obj'`: Draws target bounding boxes and segmented region borders for spatially detected regions/ROI classes.
+> *   `'pred_obj'`: Paints the tiles of each detected object instance with a distinct, randomly generated color to isolate separate predicted regions and display instance classifications.
 
 ---
 

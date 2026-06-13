@@ -269,9 +269,9 @@ def to_cpu(x: torch, numpy=False):
     if isinstance(x, torch.Tensor):
         x = x.detach().cpu().float()
         if numpy:
-            return x 
-        else:
             return x.numpy()
+        else:
+            return x
     else:
         return None
 
