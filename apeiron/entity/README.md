@@ -107,7 +107,10 @@ Requires a `.json` file containing a dictionary of annotation objects. Each obje
   "region_2": {
     "type": "ellipse",
     "properties": { "label_id": 2 },
-    "geometry": { "center": [cx, cy], ... }
+    "geometry": {
+      "center": [cx, cy],
+      "axes": [a, b],
+    }
   }
 }
 ```
